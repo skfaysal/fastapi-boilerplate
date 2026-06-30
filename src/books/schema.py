@@ -14,7 +14,3 @@ class BookUpdate(BaseModel):
     author: Optional[str] = Field(None, min_length=1, max_length=100)
     year: Optional[int] = Field(None, ge=1000, le=2100)
     price: Optional[float] = Field(None, gt=0)
-
-
-class Book(BookCreate):
-    id: int

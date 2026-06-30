@@ -1,44 +1,48 @@
-from fastapi import APIRouter, HTTPException
+from uuid import UUID
 
-from .schema import Book, BookCreate, BookUpdate
-from .book_data import book_store, next_id
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.db.main import get_session
+from src.books.model import Book
+from src.books.schema import BookCreate, BookUpdate
+from src.books.service import BookService
 
 router = APIRouter(prefix="/books", tags=["books"])
 
 
+async def get_book_service(session: AsyncSession = Depends(get_session)) -> BookService:
+    return BookService(session)
+
+
 @router.get("", response_model=list[Book])
-def list_books():
-    return list(book_store.values())
+async def list_books(service: BookService = Depends(get_book_service)):
+    return await service.get_all()
 
 
 @router.get("/{book_id}", response_model=Book)
-def get_book(book_id: int):
-    book = book_store.get(book_id)
+async def get_book(book_id: UUID, service: BookService = Depends(get_book_service)):
+    book = await service.get_by_id(book_id)
     if not book:
         raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
     return book
 
 
 @router.post("", response_model=Book, status_code=201)
-def create_book(payload: BookCreate):
-    book_id = next_id()
-    book = {"id": book_id, **payload.model_dump()}
-    book_store[book_id] = book
-    return book
+async def create_book(payload: BookCreate, service: BookService = Depends(get_book_service)):
+    return await service.create(payload)
 
 
 @router.put("/{book_id}", response_model=Book)
-def update_book(book_id: int, payload: BookUpdate):
-    book = book_store.get(book_id)
+async def update_book(book_id: UUID, payload: BookUpdate, service: BookService = Depends(get_book_service)):
+    book = await service.update(book_id, payload)
     if not book:
         raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
-    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-    book_store[book_id] = {**book, **updates}
-    return book_store[book_id]
+    return book
 
 
 @router.delete("/{book_id}", status_code=204)
-def delete_book(book_id: int):
-    if book_id not in book_store:
+async def delete_book(book_id: UUID, service: BookService = Depends(get_book_service)):
+    deleted = await service.delete(book_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
-    del book_store[book_id]
