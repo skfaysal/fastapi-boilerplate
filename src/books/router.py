@@ -4,11 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.main import get_session
+from src.auth.dependencies import get_current_user
 from src.books.model import Book
 from src.books.schema import BookCreate, BookUpdate
 from src.books.service import BookService
 
-router = APIRouter(prefix="/books", tags=["books"])
+# Every route on this router requires a valid access token. The dependency is
+# declared here (not per-endpoint) so nothing can be added later that forgets it.
+router = APIRouter(prefix="/books", tags=["books"], dependencies=[Depends(get_current_user)])
 
 
 async def get_book_service(session: AsyncSession = Depends(get_session)) -> BookService:
