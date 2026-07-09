@@ -1,19 +1,23 @@
 # FastAPI Backend Boilerplate — Living Guide
 
-> A single, evolving reference for this repo. It has three parts:
-> 1. **[The Structure Figure](#1-the-structure-figure)** — the project layout as a boilerplate: which file does what, its purpose, and its key snippet. *Keep this figure in sync as the project grows.*
-> 2. **[Topics Index](#2-topics-index)** — every concept covered here and the snippet that demonstrates it.
-> 3. **[Concept Deep-Dives](#3-concept-deep-dives)** — the "why" behind each piece, enough to start building FastAPI backends from scratch.
+> An **evolving**, hands-on guide to this repo. Read it in two passes:
+> 1. **[The Map](#the-map)** — one figure showing every file and what it does.
+> 2. **[Build Order](#build-order)** — ten expandable sections, each a topic this
+>    repo covers, laid out in the order you'd build a FastAPI backend *from scratch*.
+>    Every section opens with a mini file-tree, then explains **what it does, why it's
+>    here, how it's used**, with a snippet and a tiny example.
 >
-> The separate [`fastapi_mastery_roadmap.md`](./fastapi_mastery_roadmap.md) tracks the longer-term learning path; this guide is the hands-on companion.
+> Companion: [`fastapi_mastery_roadmap.md`](./fastapi_mastery_roadmap.md) tracks the longer learning path.
 
 ---
 
-## 1. The Structure Figure
+## The Map
 
-**Legend** — each file is tagged by the layer it belongs to:
+**Legend — the 7 roles a file can play.** This isn't decoration: the color *is* the
+architecture's vocabulary. Every file in a FastAPI backend does one of these jobs, and
+the color tags which one — so you learn the layout by role, not by filename.
 
-| | Layer | Responsibility |
+| | Layer / role | Responsibility |
 |---|---|---|
 | 🟢 | **Entry / Config** | Boot the app, load settings, open the DB engine |
 | 🔵 | **Router (HTTP)** | Paths, status codes, request/response — *no SQL* |
@@ -23,53 +27,139 @@
 | 🔴 | **Auth / Security** | Hashing, JWTs, the `get_current_user` guard |
 | ⚫ | **Migrations** | Alembic — versioned schema history |
 
-```text
-fastapi-boilerplate/
-│
-├── 🟢 src/config.py             Settings from .env (DB URL, JWT secret, token lifetimes)
-├── 🟢 src/main.py               FastAPI() app; mounts each domain router under /api/v1
-│
-├── src/db/
-│   └── 🟢 main.py               async engine + session_factory + get_session() DI provider
-│
-├── src/books/                   ── DOMAIN MODULE (the reference CRUD example) ──
-│   ├── 🟡 model.py              Book table (SQLModel, table=True)
-│   ├── 🟠 schema.py             BookCreate / BookUpdate (validated input shapes)
-│   ├── 🟣 service.py            BookService — get_all / get_by_id / create / update / delete
-│   ├── 🔵 router.py             /books endpoints; whole router guarded by get_current_user
-│   └── 🟢 book_data.py          seed/sample data
-│
-├── src/auth/                    ── DOMAIN MODULE (users + JWT auth) ──
-│   ├── 🟡 model.py              User table + RefreshToken table
-│   ├── 🟠 schema.py             UserCreate / UserRead / TokenPair / RefreshRequest
-│   ├── 🔴 utils.py              hash/verify password (bcrypt) + encode/decode JWT
-│   ├── 🟣 service.py            UserService (auth) + TokenService (issue/rotate/revoke)
-│   ├── 🔴 dependencies.py       get_current_user guard + service providers
-│   └── 🔵 router.py             /auth: register, login, refresh, logout, me, {id}
-│
-├── ⚫ alembic/                   Migration runtime (env.py) + versions/
-│   └── versions/
-│       ├── ⚫ bc6d3dfac8a9_create_user_table.py
-│       └── ⚫ a1b2c3d4e5f6_add_refresh_token_table.py
-├── ⚫ alembic.ini               Alembic CLI config
-│
-├── .env                         Secrets & DB URL (never committed)
-├── pyproject.toml / uv.lock     Dependencies (managed with uv)
-└── docs/                        This guide + the mastery roadmap
+**Two things the colors let you *see* that the labels can't:**
+- **The pattern repeats.** `books/` and `auth/` share the exact same colors (🟡🟠🟣🔵) —
+  proof that a new feature module is just this same set of roles copied again. Add a
+  module? You already know its five files.
+- **The request flow is a color path.** A request always enters 🔵, drops to 🟣, lands
+  on 🟡 — never the reverse. If you ever see 🔵 touching 🟡 directly (a router doing SQL),
+  the layering is broken.
+
+> Below, each file extends to the right into a one-line box saying what it does; box
+> border color = its role above. The full "why" lives in the [build-order sections](#build-order).
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'basis', 'nodeSpacing': 12, 'rankSpacing': 48, 'padding': 4}}}%%
+flowchart LR
+    ROOT[["📦 root"]]
+    SRC[["📂 src"]]
+    BOOKSDIR[["📂 books"]]
+    AUTHDIR[["📂 auth"]]
+    ALEDIR[["📂 alembic"]]
+    ROOT --- SRC & ALEDIR
+    SRC --- CFG & MAIN & DBMAIN & BOOKSDIR & AUTHDIR
+    BOOKSDIR --- BMODEL & BSCHEMA & BSVC & BROUTER
+    AUTHDIR --- AMODEL & ASCHEMA & AUTILS & ASVC & ADEP & AROUTER
+    ALEDIR --- ENV & VERS
+
+    CFG["📄 config.py"]
+    MAIN["📄 main.py"]
+    DBMAIN["📄 db/main.py"]
+    BMODEL["📄 model.py"]
+    BSCHEMA["📄 schema.py"]
+    BSVC["📄 service.py"]
+    BROUTER["📄 router.py"]
+    AMODEL["📄 model.py"]
+    ASCHEMA["📄 schema.py"]
+    AUTILS["📄 utils.py"]
+    ASVC["📄 service.py"]
+    ADEP["📄 dependencies.py"]
+    AROUTER["📄 router.py"]
+    ENV["📄 env.py"]
+    VERS["📄 versions/*.py"]
+
+    CFG --> nCFG["All settings, loaded from .env"]
+    MAIN --> nMAIN["Starts the app, connects all routers"]
+    DBMAIN --> nDB["Opens the DB, gives each request a session"]
+
+    BMODEL --> nBM["Defines the Book table"]
+    BSCHEMA --> nBSC["Checks incoming book data is valid"]
+    BSVC --> nBSV["DB work: add / read / update / delete books"]
+    BROUTER --> nBR["The /books API endpoints"]
+
+    AMODEL --> nAM["Defines the User &amp; refresh-token tables"]
+    ASCHEMA --> nASC["Signup input &amp; safe user output shapes"]
+    AUTILS --> nAU["Hash passwords, make &amp; read JWT tokens"]
+    ASVC --> nASV["Login check + issue / refresh / revoke tokens"]
+    ADEP --> nAD["Guards routes — is this token valid?"]
+    AROUTER --> nAR["The /auth endpoints: register, login, refresh…"]
+
+    ENV --> nENV["Connects Alembic to our DB &amp; models"]
+    VERS --> nVER["Scripts that build / change the DB tables"]
+
+    classDef folder fill:#f1f5f9,stroke:#475569,color:#0f172a,font-weight:bold;
+    classDef file   fill:#ffffff,stroke:#94a3b8,color:#0f172a;
+    classDef entry  stroke:#059669,stroke-width:2px;
+    classDef model  stroke:#ca8a04,stroke-width:2px;
+    classDef schema stroke:#ea580c,stroke-width:2px;
+    classDef service stroke:#7c3aed,stroke-width:2px;
+    classDef router stroke:#2563eb,stroke-width:2px;
+    classDef sec    stroke:#dc2626,stroke-width:2px;
+    classDef mig    stroke:#374151,stroke-width:2px;
+
+    class ROOT,SRC,BOOKSDIR,AUTHDIR,ALEDIR folder;
+    class CFG,MAIN,DBMAIN,BMODEL,BSCHEMA,BSVC,BROUTER,AMODEL,ASCHEMA,AUTILS,ASVC,ADEP,AROUTER,ENV,VERS file;
+    class nCFG,nMAIN,nDB entry;
+    class nBM,nAM model;
+    class nBSC,nASC schema;
+    class nBSV,nASV service;
+    class nBR,nAR router;
+    class nAU,nAD sec;
+    class nENV,nVER mig;
 ```
 
-> **The golden rule of this layout:** the arrow of a request is always
-> `🔵 router → 🟣 service → 🟡 model/DB`. A router never writes SQL; a service never
-> raises `HTTPException`. That one discipline is what keeps every module testable and swappable.
+> **The one pattern behind it all:** a **Layered Architecture** —
+> `Controller (router) → Service (business) → Model (DB)` — wired together by
+> **Dependency Injection**. The golden rule: a router never writes SQL, a service
+> never raises `HTTPException`.
+>
+> **Not shown (support files):** `src/books/book_data.py` (seed data), `alembic.ini`
+> (CLI config), `.env` (secrets — gitignored), `pyproject.toml` / `uv.lock` (deps via `uv`).
 
-### Per-file: purpose + key snippet
+---
+
+## Build Order
+
+The repo built up in these ten steps. Click any section to expand it.
+
+| # | Topic | Tags | Pattern |
+|---|-------|------|---------|
+| 01 | [Configuration & Environment](#01--configuration--environment) | `config` `pydantic-settings` `env` | Singleton Settings |
+| 02 | [Database Layer](#02--database-layer-engine-session--async) | `db` `postgres` `async` `sqlalchemy` | Unit of Work + DI Provider |
+| 03 | [Models / ORM Tables](#03--models-orm-tables) | `orm` `sqlmodel` `db` | ORM Domain Model |
+| 04 | [Schemas & Validation](#04--schemas-dtos--validation) | `DTO` `pydantic` `validation` | DTO |
+| 05 | [Service Layer & CRUD](#05--service-layer--crud) | `crud` `service-layer` `layered-arch` | Service Layer / Repository |
+| 06 | [Routers, Endpoints & DI](#06--routers-endpoints--dependency-injection) | `routing` `dependency-injection` `layered-arch` | Controller |
+| 07 | [Passwords & Signup](#07--passwords--user-signup) | `auth` `bcrypt` `hashing` | Service Layer + Helpers |
+| 08 | [JWT Authentication](#08--jwt-authentication-access--refresh) | `auth` `jwt` `tokens` | Token / Strategy |
+| 09 | [Protecting Endpoints](#09--protecting-endpoints-auth-guard) | `auth` `dependency-injection` `guard` | DI Provider + Guard |
+| 10 | [Migrations (Alembic)](#10--database-migrations-alembic) | `alembic` `migrations` `db` | Versioned Migrations |
+
+---
+
+### 01 · Configuration & Environment
+
+**🏷 Tags:** `config` · `pydantic-settings` · `env`
 
 <details open>
-<summary><b>🟢 src/config.py</b> — one typed place for all settings, loaded from <code>.env</code></summary>
+<summary><b>Everything the app needs to know, in one typed place.</b></summary>
 
-Pydantic-settings reads env vars, casts them to the declared types, and fails loudly at startup if a required one (like `JWT_SECRET_KEY`) is missing.
+```text
+src/config.py     🟢 the typed Settings object (import this everywhere)
+.env              🔒 the real secret values         (gitignored)
+.env.example      📋 a template to copy → .env
+```
 
+**What & why it's here.** Every backend needs knobs and secrets — the database URL, the
+JWT signing key, token lifetimes. Hard-coding them is insecure and inflexible. So step
+one is a single place that reads them from the environment. `pydantic-settings` loads
+each `.env` value, **casts it to the declared type, and validates it once at startup** —
+if `JWT_SECRET_KEY` is missing, the app refuses to boot (fail fast, not mid-request).
+
+**The code** (`src/config.py`):
 ```python
+from pydantic_settings import BaseSettings
+
 class Settings(BaseSettings):
     DATABASE_URL: str
     JWT_SECRET_KEY: str                       # REQUIRED — no default, must be in .env
@@ -78,284 +168,349 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     model_config = {"env_file": ".env"}
 
-Config = Settings()                           # import this everywhere
+Config = Settings()                           # one shared instance
 ```
+
+**How it's used.** Import the single `Config` object anywhere a setting is needed:
+```python
+from src.config import Config
+create_async_engine(url=Config.DATABASE_URL)        # in db/main.py
+jwt.encode(payload, Config.JWT_SECRET_KEY, ...)      # in auth/utils.py
+```
+
+**Pattern — Singleton Settings.** One validated config object, created once, shared by
+import. *(→ used immediately by §02.)*
 </details>
 
+---
+
+### 02 · Database Layer (Engine, Session & Async)
+
+**🏷 Tags:** `db` · `postgres` · `async` · `sqlalchemy`
+
 <details>
-<summary><b>🟢 src/main.py</b> — the app object; wires domain routers together</summary>
+<summary><b>Open a connection pool once; hand each request its own session.</b></summary>
 
-Each domain owns its own `APIRouter`; `main.py` just mounts them under a shared version prefix. No `init_db()` here — **Alembic owns the schema** (see §3.7).
-
-```python
-app = FastAPI(title="Book Store API")
-app.include_router(books_router, prefix="/api/v1")
-app.include_router(auth_router,  prefix="/api/v1")
+```text
+src/db/main.py    🟢 async_engine · session_factory · get_session()
 ```
-</details>
 
-<details>
-<summary><b>🟢 src/db/main.py</b> — the engine, the session factory, and the session DI provider</summary>
+**What & why it's here.** Before any table or query, you need a connection to Postgres.
+The **engine** is created once per process and holds a **connection pool** (it doesn't
+open a socket until asked). A **session** is one *unit of work* — you stage
+`add`/`delete`/`setattr` operations and `commit` them together. Everything is **async**
+because DB calls wait on the network; `async/await` lets the server serve other requests
+during that wait instead of blocking.
 
-One engine per process (it holds a connection pool). `get_session` is a `yield` dependency: code before `yield` runs per-request, cleanup after `yield` runs once the response is sent.
-
+**The code** (`src/db/main.py`):
 ```python
-async_engine = create_async_engine(url=Config.DATABASE_URL, echo=True)
-session_factory = async_sessionmaker(bind=async_engine, class_=AsyncSession, expire_on_commit=False)
+async_engine = create_async_engine(url=Config.DATABASE_URL, echo=True)   # echo logs SQL
+session_factory = async_sessionmaker(
+    bind=async_engine, class_=AsyncSession, expire_on_commit=False,
+)
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with session_factory() as session:
-        yield session
+        yield session          # setup before yield, cleanup (close) after the response
 ```
+
+**How it's used.** `get_session` is a **dependency**: FastAPI calls it per request and
+injects the live session wherever it's declared — usually into a service provider:
+```python
+async def get_book_service(session: AsyncSession = Depends(get_session)) -> BookService:
+    return BookService(session)
+```
+
+**Flow.** `request → get_session() opens a session → service uses it → response sent →
+session closed`. The `yield` is what splits "before" from "after".
+
+**Pattern — Unit of Work + DI Provider.** *(→ the session flows into every service in §05–08.)*
 </details>
 
+---
+
+### 03 · Models (ORM Tables)
+
+**🏷 Tags:** `orm` · `sqlmodel` · `db`
+
 <details>
-<summary><b>🟡 model.py</b> (books / auth) — tables as Python classes</summary>
+<summary><b>Tables defined as Python classes — no raw SQL.</b></summary>
 
-`table=True` registers the class on `SQLModel.metadata` (what Alembic diffs against). UUID PK, `default_factory=utcnow` timestamps, `unique=True, index=True` where the DB itself should enforce uniqueness and speed up lookups.
+```text
+src/books/model.py   🟡 Book
+src/auth/model.py    🟡 User · RefreshToken
+```
 
+**What & why it's here.** An **ORM** lets you treat a DB table as a Python class.
+SQLModel sits on SQLAlchemy (engine) + Pydantic (validation), so one class with
+`table=True` *is* the table: class name → table name, each field → a column. Every such
+class registers on `SQLModel.metadata`, which is what Alembic later diffs against (§10).
+
+**The code** (`src/auth/model.py`):
 ```python
 class User(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    username: str = Field(..., unique=True, index=True)     # DB rejects duplicates, fast lookup
     email: str = Field(..., max_length=255, unique=True, index=True)
-    hashed_password: str                      # only the bcrypt hash is ever stored
+    hashed_password: str                                    # only the bcrypt hash is stored
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
 ```
+
+**How it's used.** Services read/write these objects directly instead of SQL:
+```python
+book = await session.get(Book, book_id)      # SELECT by primary key
+session.add(User(...)); await session.commit()
+```
+
+**Conventions in this repo:** UUID primary keys, `unique=True, index=True` where the DB
+should enforce/optimize, and `created_at`/`updated_at` via `default_factory=utcnow`.
+
+**Pattern — ORM Domain Model.**
 </details>
 
+---
+
+### 04 · Schemas (DTOs) & Validation
+
+**🏷 Tags:** `DTO` · `pydantic` · `validation`
+
 <details>
-<summary><b>🟠 schema.py</b> (books / auth) — the API contract, kept separate from the table</summary>
+<summary><b>The API's contract — separate from the table, on purpose.</b></summary>
 
-Input schemas validate what the client sends (`password`, not `hashed_password`). Output schemas control what leaks out — `UserRead` deliberately has **no** password field.
+```text
+src/books/schema.py   🟠 BookCreate · BookUpdate
+src/auth/schema.py    🟠 UserCreate · UserRead · TokenPair · RefreshRequest
+```
 
+**What & why it's here.** The table model describes *storage*; a schema describes *the
+API boundary*. Keeping them separate lets you (a) validate exactly what a client may
+send and (b) control exactly what you send back. The classic payoff: `UserCreate` takes
+a `password`, but `UserRead` has **no** password field — so a hash can never leak in a
+response, even by accident.
+
+**The code** (`src/auth/schema.py`):
 ```python
 class UserCreate(BaseModel):                  # what the client SENDS
-    email: EmailStr
+    username: str = Field(..., min_length=3, max_length=50)
+    email: EmailStr                           # format-validated
     password: str = Field(..., min_length=8, max_length=72)   # 72 = bcrypt's hard limit
 
 class UserRead(BaseModel):                    # what the API RETURNS — no hash, ever
     id: UUID
     email: str
     is_active: bool
-    model_config = {"from_attributes": True}  # build directly from an ORM object
+    model_config = {"from_attributes": True}  # build straight from an ORM object
 ```
+
+**How it's used.** As the typed request body and the response filter:
+```python
+async def register(payload: UserCreate): ...          # FastAPI validates the body → 422 if bad
+@router.post("/register", response_model=UserRead)    # trims the response to safe fields
+```
+Field constraints (`min_length`, `ge/le`, `EmailStr`) give you automatic **422** errors
+and populate `/docs`.
+
+**Pattern — DTO (Data Transfer Object).** *(`books` reuses its table as the response
+model — fine, nothing sensitive; `auth` splits them because of the password hash.)*
 </details>
 
+---
+
+### 05 · Service Layer & CRUD
+
+**🏷 Tags:** `crud` · `service-layer` · `layered-arch`
+
 <details>
-<summary><b>🟣 service.py</b> (books / auth) — all DB logic, HTTP-agnostic</summary>
+<summary><b>All the database logic, with zero knowledge of HTTP.</b></summary>
 
-A service takes a `session` and owns the queries/commits. It returns `None`/`bool` on "not found" or "conflict" instead of raising HTTP errors — the router decides the status code.
+```text
+src/books/service.py   🟣 BookService  (the reference CRUD implementation)
+```
 
+**What & why it's here.** The service owns queries, commits, and business rules. It takes
+a `session` and exposes intent-named methods (`create`, `get_by_id`, …). Crucially it
+returns `None`/`bool` on "not found"/"conflict" **instead of raising HTTP errors** — that
+keeps status-code decisions in the router (§06) and makes the service reusable and testable.
+
+**The code** (`src/books/service.py`) — the five CRUD operations:
 ```python
 class BookService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def get_all(self) -> list[Book]:
+        return (await self.session.execute(select(Book))).scalars().all()
+
+    async def get_by_id(self, book_id) -> Book | None:
+        return await self.session.get(Book, book_id)          # by primary key
+
     async def create(self, payload: BookCreate) -> Book:
         book = Book(**payload.model_dump())
-        self.session.add(book)                # stage
-        await self.session.commit()           # write
-        await self.session.refresh(book)      # re-read (populates created_at, etc.)
+        self.session.add(book)                                # stage
+        await self.session.commit()                           # write
+        await self.session.refresh(book)                      # re-read server-set fields
+        return book
+
+    async def update(self, book_id, payload: BookUpdate) -> Book | None:
+        book = await self.session.get(Book, book_id)
+        if not book:
+            return None
+        for k, v in payload.model_dump(exclude_unset=True).items():  # only sent fields
+            setattr(book, k, v)
+        await self.session.commit(); await self.session.refresh(book)
         return book
 ```
+
+**How it's used.** The router constructs it (via DI) and calls it:
+```python
+book = await service.create(payload)
+```
+
+**Two things worth remembering:** `add → commit → refresh` (refresh repopulates
+`created_at` etc.), and `exclude_unset=True` on updates so you don't overwrite fields the
+client didn't send.
+
+**Pattern — Service Layer / Repository.**
 </details>
 
+---
+
+### 06 · Routers, Endpoints & Dependency Injection
+
+**🏷 Tags:** `routing` · `dependency-injection` · `layered-arch`
+
 <details>
-<summary><b>🔵 router.py</b> (books / auth) — HTTP surface, resolves services via <code>Depends</code></summary>
+<summary><b>The HTTP surface — URLs in, status codes out — assembled by DI.</b></summary>
 
-The router maps URLs to service calls and turns `None` into the right status code. Auth is attached at the **router** level so no future endpoint can forget it.
+```text
+src/books/router.py   🔵 /books endpoints + get_book_service provider
+src/main.py           🟢 mounts every router under /api/v1
+```
 
+**What & why it's here.** The router is the **controller**: it declares URLs, pulls a
+ready-to-use service from `Depends`, and translates results into HTTP — `201` on create,
+`404` when the service returns `None`. It never touches SQL. `main.py` is the
+**composition root**: it builds the app and mounts each module's router.
+
+**Dependency Injection** is the glue. `Depends(fn)` runs `fn` and injects its result;
+FastAPI resolves the whole chain (`get_session → get_book_service → endpoint`) for you.
+
+**The code** (`src/books/router.py`):
 ```python
-router = APIRouter(prefix="/books", tags=["books"],
-                   dependencies=[Depends(get_current_user)])   # every route needs a token
+router = APIRouter(prefix="/books", tags=["books"])
 
-@router.get("/{book_id}", response_model=Book)
+async def get_book_service(session: AsyncSession = Depends(get_session)) -> BookService:
+    return BookService(session)                       # DI: session → service
+
+@router.get("/{book_id}", response_model=Book)        # path param, auto-cast to UUID
 async def get_book(book_id: UUID, service: BookService = Depends(get_book_service)):
     book = await service.get_by_id(book_id)
     if not book:
         raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
     return book
 ```
+And the wiring (`src/main.py`):
+```python
+app = FastAPI(title="Book Store API")
+app.include_router(books_router, prefix="/api/v1")
+app.include_router(auth_router,  prefix="/api/v1")
+```
+
+**Parameters & ordering (good to know):**
+- **Path params** (`{book_id}`) are mandatory and type-cast — a bad type → automatic `422`.
+- **Query params** are any function arg *not* in the path; use `Query(default, ge=…, description=…)` for validation/docs.
+- **Route ordering** matters: FastAPI matches top-to-bottom, so declare `/books/popular` *before* `/books/{book_id}` or it gets swallowed.
+
+**Example.** `GET /api/v1/books/3fa8…` → `get_book(book_id=UUID(...))` → `200` book, or `404`.
+
+**Pattern — Controller (+ DI).**
 </details>
 
+---
+
+### 07 · Passwords & User Signup
+
+**🏷 Tags:** `auth` · `bcrypt` · `hashing`
+
 <details>
-<summary><b>🔴 src/auth/utils.py</b> — password hashing + JWT encode/decode</summary>
+<summary><b>Create accounts without ever storing a plaintext password.</b></summary>
 
-Bcrypt with a per-call random salt (rainbow-table resistant). Every JWT carries a `type` (access/refresh) and a `jti` (unique id) so tokens can't be confused and refresh tokens can be tracked.
+```text
+src/auth/utils.py     🔴 hash_password / verify_password  (bcrypt)
+src/auth/service.py   🟣 UserService.create / authenticate
+src/auth/router.py    🔵 POST /auth/register
+```
 
+**What & why it's here.** The first real security step: sign-up. Passwords are hashed
+with **bcrypt**, which uses a fresh random salt per call — so the same password hashes
+to two different strings, defeating rainbow tables. Only the hash is stored. Signup
+refuses a duplicate email with `409`.
+
+**The code:**
 ```python
+# utils.py — hashing
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
 
-def encode_token(*, subject: UUID, token_type: str, jti: UUID, expires_at: datetime) -> str:
-    payload = {"sub": str(subject), "type": token_type, "jti": str(jti),
-               "iat": datetime.now(timezone.utc), "exp": expires_at}
-    return jwt.encode(payload, Config.JWT_SECRET_KEY, algorithm=Config.JWT_ALGORITHM)
-```
-</details>
-
-<details>
-<summary><b>🔴 src/auth/dependencies.py</b> — the <code>get_current_user</code> guard</summary>
-
-The single choke point for "is this request authenticated?". Rejects (`401`) anything that isn't a valid, unexpired **access** token belonging to an existing, active user.
-
-```python
-async def get_current_user(token: str = Depends(oauth2_scheme),
-                           service: UserService = Depends(get_user_service)) -> User:
-    payload = decode_token(token)                       # raises on bad/expired token
-    if payload.get("type") != ACCESS_TOKEN_TYPE:        # refuse refresh tokens here
-        raise _credentials_error
-    user = await service.get_by_id(UUID(payload["sub"]))
-    if user is None or not user.is_active:
-        raise _credentials_error
+# service.py — create rejects duplicates by returning None (router maps to 409)
+async def create(self, payload: UserCreate) -> User | None:
+    if await self.get_by_email(payload.email):
+        return None
+    user = User(**payload.model_dump(exclude={"password"}),
+                hashed_password=hash_password(payload.password))
+    self.session.add(user); await self.session.commit(); await self.session.refresh(user)
     return user
 ```
+```python
+# router.py — turn the None into an HTTP status
+@router.post("/register", response_model=UserRead, status_code=201)
+async def register_user(payload: UserCreate, service: UserService = Depends(get_user_service)):
+    user = await service.create(payload)
+    if not user:
+        raise HTTPException(status_code=409, detail=f"User with email {payload.email} already exists")
+    return user
+```
+
+**Flow.** `POST /auth/register` → `create()` checks email → hashes password → stores →
+returns `201` + `UserRead` (no hash).
+
+**Example.**
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/register -H "Content-Type: application/json" \
+  -d '{"username":"alice","email":"alice@example.com","first_name":"Al","last_name":"Ice","password":"supersecret123"}'
+```
+
+**Pattern — Service Layer + security Helpers.** *(`verify_password` gets used next, at login.)*
 </details>
 
 ---
 
-## 2. Topics Index
+### 08 · JWT Authentication (Access + Refresh)
 
-Everything this boilerplate teaches, and where to see it working. *Add a row here whenever you add a concept.*
+**🏷 Tags:** `auth` · `jwt` · `tokens`
 
-| # | Topic | Deep-dive | Canonical snippet in code |
-|---|-------|-----------|---------------------------|
-| 1 | ORM basics (SQLModel = SQLAlchemy + Pydantic) | [§3.1](#31-database--orm-sqlmodel) | `src/books/model.py` |
-| 2 | Async engine, connection pool, sessions | [§3.1](#31-database--orm-sqlmodel) | `src/db/main.py` |
-| 3 | Defining a table (`table=True`, UUID PK, indexes) | [§3.1](#31-database--orm-sqlmodel) | `src/auth/model.py::User` |
-| 4 | The layered pattern (router → service → db) | [§3.2](#32-the-layered-pattern--dependency-injection) | `books/{router,service}.py` |
-| 5 | Dependency Injection (`Depends`, `yield` sessions) | [§3.2](#32-the-layered-pattern--dependency-injection) | `db/main.py::get_session` |
-| 6 | Async & why it matters for DB I/O | [§3.2](#32-the-layered-pattern--dependency-injection) | every `async def` service method |
-| 7 | CRUD operations (add/commit/refresh, `exclude_unset`) | [§3.3](#33-crud-operations) | `src/books/service.py` |
-| 8 | Request vs response schemas (contract separation) | [§3.4](#34-schemas--validation) | `src/auth/schema.py` |
-| 9 | Path & query parameters, `Query(...)` validation | [§3.5](#35-path--query-parameters--route-ordering) | `books/router.py` params |
-| 10 | Route ordering (specific before parameterised) | [§3.5](#35-path--query-parameters--route-ordering) | — (rule of thumb) |
-| 11 | User signup + bcrypt password hashing | [§3.6](#36-users--password-hashing) | `auth/utils.py`, `auth/service.py::create` |
-| 12 | Alembic migrations (why, wiring, daily commands) | [§3.7](#37-alembic-migrations) | `alembic/env.py`, `alembic/versions/` |
-| 13 | JWT auth: access + refresh tokens | [§3.8](#38-jwt-authentication-access--refresh) | `auth/utils.py`, `auth/service.py::TokenService` |
-| 14 | Protecting endpoints (`get_current_user`) | [§3.8](#38-jwt-authentication-access--refresh) | `auth/dependencies.py` |
-| 15 | Refresh rotation, reuse detection, logout | [§3.8](#38-jwt-authentication-access--refresh) | `auth/service.py::TokenService.rotate` |
+<details>
+<summary><b>Log in once; stay authenticated with two tokens.</b></summary>
 
----
-
-## 3. Concept Deep-Dives
-
-### 3.1 Database & ORM (SQLModel)
-
-An **ORM** lets you work with tables as Python classes instead of raw SQL. SQLModel sits on **SQLAlchemy** (the ORM engine) and **Pydantic** (validation) — one class does both.
-
-```python
-# without ORM:  INSERT INTO book (title) VALUES ('Clean Code');
-book = Book(title="Clean Code", author="Martin")   # with ORM
-session.add(book); await session.commit()
+```text
+src/auth/utils.py     🔴 encode_token / decode_token
+src/auth/model.py     🟡 RefreshToken   (one row per issued refresh token)
+src/auth/schema.py    🟠 TokenPair · RefreshRequest
+src/auth/service.py   🟣 TokenService.issue_pair / rotate / revoke
+src/auth/router.py    🔵 /login · /refresh · /logout
 ```
 
-**Engine** — the single connection point, created once at startup. It doesn't open a connection immediately; it builds a **connection pool** and hands out connections on demand. `echo=True` logs every SQL statement (great in dev).
+**What & why it's here.** After signup, users need to authenticate on every request
+without resending the password. The solution is **two JWTs**:
+- **Access token** — short-lived (**15 min**), sent on every request, pure stateless JWT
+  (verify signature + expiry, no DB hit). Fast, and a leak expires quickly.
+- **Refresh token** — long-lived (**7 days**), used *only* at `/auth/refresh`. Each has a
+  `refresh_token` **row** (keyed by its `jti`), which is what makes it **revocable** and
+  **single-use** — impossible with a bare JWT.
 
-**Session** — one *unit of work* (a shopping basket): collect `add`/`delete`/`setattr` operations, then `commit` them together. `expire_on_commit=False` keeps objects usable after commit.
-
-**Defining a table** — any `SQLModel` subclass with `table=True` maps to a table (class name → table name, fields → columns). `SQLModel.metadata` tracks all such classes — this is what both `create_all` and Alembic autogenerate read.
-
-> This repo uses **Postgres via the async `asyncpg` driver** (`postgresql+asyncpg://…`), so every DB call is awaited.
-
-### 3.2 The Layered Pattern & Dependency Injection
-
-```
-router.py   →   service.py   →   database
-(HTTP)          (business)       (SQLAlchemy)
-```
-
-- **Router** handles HTTP — paths, status codes, raising 404s.
-- **Service** handles DB logic — queries, commits, business rules.
-- Keeping them separate means the router never touches SQL and the service never knows about HTTP.
-
-**Dependency Injection** — `Depends` runs a function and injects its return value. FastAPI resolves the whole chain automatically: you declare what you need, it figures out what to call first.
-
-```python
-# get_session (yield) → get_book_service (wraps session) → endpoint (gets ready service)
-async def get_book_service(session: AsyncSession = Depends(get_session)) -> BookService:
-    return BookService(session)
-```
-
-`get_session` uses `yield`, not `return`: it's a context-manager dependency — setup before `yield`, teardown after the response.
-
-**Why async?** DB calls wait on network round-trips to Postgres. `async/await` lets the server serve other requests during that wait instead of blocking. Every method that touches the DB is `async def` and every DB call is `await`ed.
-
-### 3.3 CRUD Operations
-
-All five live in `src/books/service.py` — the reference implementation:
-
-| Op | Core call | Note |
-|----|-----------|------|
-| Read all | `(await session.execute(select(Book))).scalars().all()` | `select(Book)` = `SELECT * FROM book` |
-| Read one | `await session.get(Book, id)` | by primary key, no `WHERE` needed |
-| Create | `session.add(obj)` → `commit()` → `refresh(obj)` | `refresh` repopulates server-set fields |
-| Update | `setattr` from `model_dump(exclude_unset=True)` → `commit` | only fields the client actually sent |
-| Delete | `await session.delete(obj)` → `commit()` | |
-
-`exclude_unset=True` is the key to a correct `PATCH`/`PUT`: it skips fields the client omitted so you don't overwrite them with defaults.
-
-### 3.4 Schemas & Validation
-
-Table models and API schemas are **deliberately separate**:
-
-- **Input schema** (`UserCreate`, `BookCreate`) — validates what comes in. Constraints live here: `Field(min_length=8, max_length=72)`, `EmailStr`, `ge=1000, le=2100`.
-- **Output schema** (`UserRead`) — controls what goes out. It has no `hashed_password` field, so a hash can never leak in a response even by accident. Use `model_config = {"from_attributes": True}` to build it straight from an ORM object.
-
-> `books` reuses its table model as the `response_model` — fine, because nothing on it is sensitive. `auth` splits them because a password hash must never be serialized.
-
-### 3.5 Path & Query Parameters + Route Ordering
-
-- **Path params** — declared as `{name}` in the URL; FastAPI type-casts them (`/books/abc` where an `int`/`UUID` is expected → automatic **422**). Mandatory.
-- **Query params** — any function arg *not* in the path (`?author=Martin&limit=5`). Use `Query(...)` when you need validation or `/docs` descriptions:
-
-```python
-def list_books(author: str | None = Query(None, description="Filter by author"),
-               limit: int = Query(10, ge=1, le=100)): ...
-```
-
-- **Route ordering** — FastAPI matches **top-to-bottom**. Put specific paths *before* parameterised ones, or `/books/popular` gets swallowed by `/books/{book_id}` and cast to the param's type → 422.
-
-### 3.6 Users & Password Hashing
-
-Signup follows the same layered pattern as `books`. Two `utils.py` helpers wrap bcrypt:
-
-```python
-hash_password("secret")          # -> "$2b$12$..."  (fresh random salt each call)
-verify_password("secret", hash)  # -> True / False
-```
-
-`UserService.create()` checks `get_by_email()` first and returns `None` on conflict (the router turns that into `409`). The plaintext password is never persisted — only the bcrypt hash. Bcrypt's max input is **72 bytes**, which is why `UserCreate.password` caps at 72.
-
-### 3.7 Alembic Migrations
-
-A **migration** is a versioned, ordered script that changes the DB schema. Each knows its predecessor (`down_revision`), forming a chain you can `upgrade`/`downgrade`.
-
-**Why not `create_all()`?** It only *adds tables that don't exist* — it can't alter an existing table (add/rename a column, add a constraint) and keeps no history. The moment a table already holds real data, you need migrations. Alembic also makes every environment reach the exact same schema by replaying the same scripts.
-
-> That's why `main.py` no longer calls `init_db()`: with Alembic in charge, `create_all` and migrations would fight over who owns the schema. **Alembic is the single source of truth.**
-
-**Two customizations in `alembic/env.py`:**
-1. Pull the real DB URL from the app config: `config.set_main_option("sqlalchemy.url", Config.DATABASE_URL)`.
-2. Import **every** model module so its table registers on `SQLModel.metadata` before autogenerate diffs it. *Any new module under `src/` must be imported here or Alembic won't see its table.* (`script.py.mako` also has `import sqlmodel` added, or autogenerated files `NameError` on `sqlmodel.sql.sqltypes.AutoString`.)
-
-**Daily commands:**
-```bash
-uv run alembic revision --autogenerate -m "add is_active to user"   # generate (always read it!)
-uv run alembic upgrade head        # apply
-uv run alembic downgrade -1        # roll back one
-uv run alembic current | history   # inspect
-```
-
-### 3.8 JWT Authentication (access + refresh)
-
-Users authenticate **once** and get two JWTs signed with one secret:
-
-- **Access token** — short-lived (**15 min**), sent on every request (`Authorization: Bearer <token>`). Pure stateless JWT: verify signature + expiry, no DB lookup. Fast, but **can't be revoked early** — which is fine because it dies fast.
-- **Refresh token** — long-lived (**7 days**), used *only* at `POST /auth/refresh` to mint a new access token. Each one has a `refresh_token` **row** (keyed by its `jti`), which is what makes it **revocable** and **single-use**.
-
-**Why two?** One unavoidable tension: a token used *constantly* wants to be short-lived (low leak blast-radius), but a token that keeps you logged in *for days* wants to be long-lived. Split the job: the access token is used constantly but expires fast; the refresh token is used rarely but lives long.
+**Why two?** A token used constantly wants to be short-lived (low leak blast-radius); a
+token that keeps you logged in for days wants to be long-lived. Split the job:
 
 ```
 login (password, once)
@@ -371,47 +526,157 @@ login (password, once)
    └──────────────┘
 ```
 
-**Endpoints** (all under `/api/v1`):
+**The code** (`src/auth/service.py`) — issue and rotate:
+```python
+async def issue_pair(self, user: User) -> tuple[str, str]:
+    access = encode_token(subject=user.id, token_type=ACCESS_TOKEN_TYPE, jti=uuid4(),
+                          expires_at=now + timedelta(minutes=Config.ACCESS_TOKEN_EXPIRE_MINUTES))
+    refresh_jti = uuid4()
+    self.session.add(RefreshToken(id=refresh_jti, user_id=user.id, expires_at=...))  # store it
+    await self.session.commit()
+    refresh = encode_token(subject=user.id, token_type=REFRESH_TOKEN_TYPE, jti=refresh_jti, expires_at=...)
+    return access, refresh
+
+async def rotate(self, refresh_jti, user):
+    record = await self.session.get(RefreshToken, refresh_jti)
+    if record is None or record.expires_at < utcnow():
+        raise TokenAlreadyUsedError()
+    if record.revoked:                              # replay of a used token → likely theft
+        await self.revoke_all_for_user(record.user_id)   # nuke all sessions
+        raise TokenAlreadyUsedError()
+    record.revoked = True; await self.session.commit()
+    return await self.issue_pair(user)              # brand-new pair (single-use)
+```
+
+**Endpoints** (under `/api/v1`):
 
 | Method & path | Auth | Body / form | Returns |
 |---|---|---|---|
-| `POST /auth/register` | no | JSON `UserCreate` | `201` user |
 | `POST /auth/login` | no | **form** `username`(=email), `password` | `200` token pair |
 | `POST /auth/refresh` | refresh token | JSON `{refresh_token}` | `200` new pair |
 | `POST /auth/logout` | refresh token | JSON `{refresh_token}` | `204` |
-| `GET /auth/me` | **access token** | — | `200` current user |
-| `GET /auth/{id}` | **access token** | — | `200` user |
-| `GET/POST/... /books` | **access token** | — | book data |
 
-> `login` uses the OAuth2 **password form** (`username`+`password`, not JSON) on purpose — it's the FastAPI convention and it's what makes Swagger UI's **Authorize** button work. Put the email in `username`.
+> `login` uses the OAuth2 **password form** (`username`+`password`, not JSON) — the
+> FastAPI convention that also powers Swagger's **Authorize** button. Put the email in `username`.
 
-**Protecting your own endpoints:**
-```python
-# whole router:
-router = APIRouter(prefix="/books", dependencies=[Depends(get_current_user)])
-# single endpoint + get the user:
-async def profile(current_user: User = Depends(get_current_user)):
-    return {"email": current_user.email}
+**Example.**
+```bash
+curl -X POST .../auth/login -d "username=alice@example.com&password=supersecret123"
+# -> {"access_token":"eyJ...","refresh_token":"eyJ...","token_type":"bearer"}
+curl -X POST .../auth/refresh -H "Content-Type: application/json" -d '{"refresh_token":"eyJ..."}'
+# -> a NEW access AND refresh token; the old refresh token is now dead
 ```
 
-**Design decisions worth remembering:**
-- **One secret, two types.** Every JWT has a `type` claim; `get_current_user` refuses refresh tokens, `/refresh` refuses access tokens.
-- **Rotation (single-use).** Each `/refresh` revokes the presented token and issues a fresh pair — a refresh token works exactly once.
-- **Reuse detection.** Presenting an already-rotated token = likely theft → revoke **all** of that user's refresh tokens (`revoke_all_for_user`), forcing a fresh login everywhere.
-- **No user enumeration.** `login` returns the same `401` for unknown email vs wrong password, and `authenticate` runs a hash compare even when the user doesn't exist, so timing doesn't leak which emails are registered.
-- **Logout is best-effort for access tokens.** A stateless access token stays valid until it expires; that's the trade-off for not hitting the DB per request. Keep `ACCESS_TOKEN_EXPIRE_MINUTES` small. Logout revokes the *refresh* token so no new access tokens can be minted.
+**Security decisions baked in:** one secret but a `type` claim keeps access/refresh from
+being confused · rotation makes refresh tokens single-use · reuse of a rotated token
+revokes the whole family · `login` gives the same `401` for unknown-email vs wrong-password
+(no user enumeration).
 
 **Config** (`.env`):
 ```dotenv
-JWT_SECRET_KEY=<long random string>   # REQUIRED; different per environment, never commit prod
-JWT_ALGORITHM=HS256
+JWT_SECRET_KEY=<long random string>   # REQUIRED; different per env, never commit prod
 ACCESS_TOKEN_EXPIRE_MINUTES=15
 REFRESH_TOKEN_EXPIRE_DAYS=7
 ```
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(64))"   # generate a strong secret
-uv run alembic upgrade head                                    # creates the refresh_token table
+
+**Pattern — Token auth / Strategy (per-token-type).**
+</details>
+
+---
+
+### 09 · Protecting Endpoints (Auth Guard)
+
+**🏷 Tags:** `auth` · `dependency-injection` · `guard`
+
+<details>
+<summary><b>One reusable dependency that turns a token into the current user — or a 401.</b></summary>
+
+```text
+src/auth/dependencies.py   🔴 get_current_user  (+ service providers)
+src/books/router.py        🔵 example: the whole router is guarded
 ```
+
+**What & why it's here.** Once tokens exist, you need a single, reusable gate that every
+protected route uses. `get_current_user` reads the `Authorization: Bearer` token,
+validates it's a genuine unexpired **access** token, loads the user, and returns it — or
+raises `401`. Because it's a dependency, protecting a route is one line.
+
+**The code** (`src/auth/dependencies.py`):
+```python
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")   # powers Swagger Authorize
+
+async def get_current_user(token: str = Depends(oauth2_scheme),
+                           service: UserService = Depends(get_user_service)) -> User:
+    try:
+        payload = decode_token(token)
+    except jwt.PyJWTError:
+        raise _credentials_error
+    if payload.get("type") != ACCESS_TOKEN_TYPE:     # refuse refresh tokens here
+        raise _credentials_error
+    user = await service.get_by_id(UUID(payload["sub"]))
+    if user is None or not user.is_active:
+        raise _credentials_error
+    return user
+```
+
+**How it's used** — two ways:
+```python
+# (a) guard an ENTIRE router — nothing added later can forget it (this repo does this for /books):
+router = APIRouter(prefix="/books", dependencies=[Depends(get_current_user)])
+
+# (b) guard ONE endpoint AND receive the user object:
+@router.get("/me", response_model=UserRead)
+async def read_me(current_user: User = Depends(get_current_user)):
+    return current_user
+```
+
+**Pattern — DI Provider + Auth Guard.**
+</details>
+
+---
+
+### 10 · Database Migrations (Alembic)
+
+**🏷 Tags:** `alembic` · `migrations` · `db`
+
+<details>
+<summary><b>Evolve the schema safely, with a versioned, replayable history.</b></summary>
+
+```text
+alembic/env.py            ⚫ wires DATABASE_URL + SQLModel.metadata
+alembic/versions/*.py     ⚫ ordered, reversible schema-change scripts
+alembic.ini               ⚫ Alembic CLI config
+```
+
+**What & why it's here.** `SQLModel.metadata.create_all` only ever *adds missing tables* —
+it can't alter an existing one and keeps no history. The moment a table holds real data,
+you need **migrations**: versioned scripts (each knows its predecessor) you can `upgrade`
+or `downgrade`, so every environment reaches the exact same schema. That's why `main.py`
+dropped `init_db()` — **Alembic is now the single source of truth** for the schema.
+
+**The wiring** (`alembic/env.py`) — two customizations:
+```python
+# 1) use the app's real DB URL (not the alembic.ini placeholder)
+config.set_main_option("sqlalchemy.url", Config.DATABASE_URL)
+
+# 2) import EVERY model module so its table registers before autogenerate diffs it
+from src.books import model as books_model   # noqa: F401
+from src.auth import model as auth_model      # noqa: F401
+target_metadata = SQLModel.metadata
+```
+> Any new module under `src/` must be imported here, or Alembic won't see its table.
+> (`script.py.mako` also has `import sqlmodel` added, or autogenerated files `NameError`.)
+
+**How it's used** — daily commands:
+```bash
+uv run alembic revision --autogenerate -m "add is_active to user"  # generate (always read it!)
+uv run alembic upgrade head        # apply latest
+uv run alembic downgrade -1        # roll back one
+uv run alembic current | history   # inspect
+```
+
+**Pattern — Versioned Migrations.**
+</details>
 
 ---
 
@@ -420,12 +685,15 @@ uv run alembic upgrade head                                    # creates the ref
 ```bash
 uv sync                                   # install deps
 cp .env.example .env                      # set DATABASE_URL + JWT_SECRET_KEY
-uv run alembic upgrade head               # build the schema
+uv run alembic upgrade head               # build the schema (§10)
 uv run uvicorn src.main:app --reload      # run → http://localhost:8000/docs
 ```
-
 Then in Swagger (`/docs`): **register → Authorize** (email as username) → call protected `/books`.
+
+Generate a JWT secret: `python -c "import secrets; print(secrets.token_urlsafe(64))"`
 
 ---
 
-*This is an evolving document. When you add a module, feature, or concept: update the [figure](#1-the-structure-figure), add a [topics-index](#2-topics-index) row, and (if it needs the "why") a deep-dive section.*
+*Evolving doc. When you add a feature: drop its file(s) into the [figure](#the-map), add a
+[Build-Order](#build-order) row, and write a new step-by-step section in the same shape
+(mini-tree → what/why → code → how it's used → pattern). Keep the sections in build order.*
