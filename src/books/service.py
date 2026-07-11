@@ -1,10 +1,14 @@
 from uuid import UUID
 
+from sqlalchemy import asc, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.books.model import Book, utcnow
 from src.books.schema import BookCreate, BookUpdate
+
+# Whitelist of sortable columns — never getattr() an arbitrary client string onto the model.
+_SORTABLE = {"created_at", "title", "author", "year", "price"}
 
 
 class BookService:
@@ -14,6 +18,30 @@ class BookService:
     async def get_all(self) -> list[Book]:
         result = await self.session.execute(select(Book))
         return result.scalars().all()
+
+    async def list_paginated(
+        self, *, limit: int, offset: int, sort_by: str, order: str, author: str | None = None,
+    ) -> tuple[list[Book], int]:
+        """Return one page of books plus the total count (for the Page envelope).
+
+        Filtering (`author` substring), sorting (whitelisted column + direction) and
+        pagination (`limit`/`offset`) are the three conventions every list endpoint reuses.
+        """
+        conditions = []
+        if author:
+            conditions.append(Book.author.ilike(f"%{author}%"))
+
+        column = getattr(Book, sort_by if sort_by in _SORTABLE else "created_at")
+        direction = desc if order == "desc" else asc
+
+        page_query = (
+            select(Book).where(*conditions).order_by(direction(column)).limit(limit).offset(offset)
+        )
+        items = (await self.session.execute(page_query)).scalars().all()
+
+        count_query = select(func.count()).select_from(Book).where(*conditions)
+        total = (await self.session.execute(count_query)).scalar_one()
+        return items, total
 
     async def get_by_id(self, book_id: UUID) -> Book | None:
         return await self.session.get(Book, book_id)

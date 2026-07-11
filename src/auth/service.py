@@ -51,7 +51,7 @@ class UserService:
         dummy hash — so the response time doesn't leak whether an email is
         registered (a timing side-channel).
         """
-        user = await self.get_by_email(email)
+        user = await self.get_by_email(email.lower())
         if user is None:
             # Constant-ish work to avoid user-enumeration via timing.
             verify_password(password, hash_password("dummy-password-for-timing"))

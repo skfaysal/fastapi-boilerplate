@@ -21,6 +21,11 @@ async def init_db():
         await conn.run_sync(SQLModel.metadata.create_all)
 
 
+async def dispose_engine() -> None:
+    """Close the connection pool. Called from the app's lifespan on shutdown."""
+    await async_engine.dispose()
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with session_factory() as session:
         yield session

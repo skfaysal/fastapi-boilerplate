@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # CORS — which browser origins may call the API (["*"] = any, dev only)
+    CORS_ORIGINS: list[str] = ["*"]
+
     model_config = {"env_file": ".env"}
 
 

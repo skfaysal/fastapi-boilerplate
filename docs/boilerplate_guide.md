@@ -26,6 +26,9 @@ the color tags which one — so you learn the layout by role, not by filename.
 | 🟠 | **Schema (Contract)** | Pydantic request/response shapes — *not the table* |
 | 🔴 | **Auth / Security** | Hashing, JWTs, the `get_current_user` guard |
 | ⚫ | **Migrations** | Alembic — versioned schema history |
+| 🧪 | **Tests** | pytest + httpx `AsyncClient`, `dependency_overrides` |
+
+*(🟢 Entry/Config also covers app-level wiring added in `main.py`: middleware, CORS, exception handlers, lifespan.)*
 
 **Two things the colors let you *see* that the labels can't:**
 - **The pattern repeats.** `books/` and `auth/` share the exact same colors (🟡🟠🟣🔵) —
@@ -46,15 +49,21 @@ flowchart LR
     BOOKSDIR[["📂 books"]]
     AUTHDIR[["📂 auth"]]
     ALEDIR[["📂 alembic"]]
-    ROOT --- SRC & ALEDIR
-    SRC --- CFG & MAIN & DBMAIN & BOOKSDIR & AUTHDIR
+    TESTSDIR[["📂 tests"]]
+    ROOT --- SRC & ALEDIR & TESTSDIR
+    SRC --- CFG & MAIN & DBMAIN & SCHEMAS & DEPS & EXC & MW & BOOKSDIR & AUTHDIR
     BOOKSDIR --- BMODEL & BSCHEMA & BSVC & BROUTER
     AUTHDIR --- AMODEL & ASCHEMA & AUTILS & ASVC & ADEP & AROUTER
     ALEDIR --- ENV & VERS
+    TESTSDIR --- TCONF
 
     CFG["📄 config.py"]
     MAIN["📄 main.py"]
     DBMAIN["📄 db/main.py"]
+    SCHEMAS["📄 schemas.py"]
+    DEPS["📄 dependencies.py"]
+    EXC["📄 exceptions.py"]
+    MW["📄 middleware.py"]
     BMODEL["📄 model.py"]
     BSCHEMA["📄 schema.py"]
     BSVC["📄 service.py"]
@@ -67,18 +76,23 @@ flowchart LR
     AROUTER["📄 router.py"]
     ENV["📄 env.py"]
     VERS["📄 versions/*.py"]
+    TCONF["📄 conftest.py + test_*.py"]
 
     CFG --> nCFG["All settings, loaded from .env"]
-    MAIN --> nMAIN["Starts the app, connects all routers"]
+    MAIN --> nMAIN["App + middleware + CORS + lifespan + error handlers"]
     DBMAIN --> nDB["Opens the DB, gives each request a session"]
+    SCHEMAS --> nSC["Shared base model + Page / Error shapes"]
+    DEPS --> nDEP["Shared deps: pagination / sort params"]
+    EXC --> nEXC["Custom errors → one JSON error shape"]
+    MW --> nMW["Every request gets an id + timing header"]
 
     BMODEL --> nBM["Defines the Book table"]
-    BSCHEMA --> nBSC["Checks incoming book data is valid"]
-    BSVC --> nBSV["DB work: add / read / update / delete books"]
+    BSCHEMA --> nBSC["Validate book data + field validators"]
+    BSVC --> nBSV["DB work: CRUD + paginate / filter / sort"]
     BROUTER --> nBR["The /books API endpoints"]
 
     AMODEL --> nAM["Defines the User &amp; refresh-token tables"]
-    ASCHEMA --> nASC["Signup input &amp; safe user output shapes"]
+    ASCHEMA --> nASC["Signup input + validators, safe output"]
     AUTILS --> nAU["Hash passwords, make &amp; read JWT tokens"]
     ASVC --> nASV["Login check + issue / refresh / revoke tokens"]
     ADEP --> nAD["Guards routes — is this token valid?"]
@@ -86,6 +100,7 @@ flowchart LR
 
     ENV --> nENV["Connects Alembic to our DB &amp; models"]
     VERS --> nVER["Scripts that build / change the DB tables"]
+    TCONF --> nT["AsyncClient + dependency_overrides (mock db/auth)"]
 
     classDef folder fill:#f1f5f9,stroke:#475569,color:#0f172a,font-weight:bold;
     classDef file   fill:#ffffff,stroke:#94a3b8,color:#0f172a;
@@ -96,16 +111,18 @@ flowchart LR
     classDef router stroke:#2563eb,stroke-width:2px;
     classDef sec    stroke:#dc2626,stroke-width:2px;
     classDef mig    stroke:#374151,stroke-width:2px;
+    classDef test   stroke:#0d9488,stroke-width:2px;
 
-    class ROOT,SRC,BOOKSDIR,AUTHDIR,ALEDIR folder;
-    class CFG,MAIN,DBMAIN,BMODEL,BSCHEMA,BSVC,BROUTER,AMODEL,ASCHEMA,AUTILS,ASVC,ADEP,AROUTER,ENV,VERS file;
-    class nCFG,nMAIN,nDB entry;
+    class ROOT,SRC,BOOKSDIR,AUTHDIR,ALEDIR,TESTSDIR folder;
+    class CFG,MAIN,DBMAIN,SCHEMAS,DEPS,EXC,MW,BMODEL,BSCHEMA,BSVC,BROUTER,AMODEL,ASCHEMA,AUTILS,ASVC,ADEP,AROUTER,ENV,VERS,TCONF file;
+    class nCFG,nMAIN,nDB,nEXC,nMW entry;
     class nBM,nAM model;
-    class nBSC,nASC schema;
+    class nBSC,nASC,nSC,nDEP schema;
     class nBSV,nASV service;
     class nBR,nAR router;
     class nAU,nAD sec;
     class nENV,nVER mig;
+    class nT test;
 ```
 
 > **The one pattern behind it all:** a **Layered Architecture** —
@@ -134,6 +151,16 @@ The repo built up in these ten steps. Click any section to expand it.
 | 08 | [JWT Authentication](#08--jwt-authentication-access--refresh) | `auth` `jwt` `tokens` | Token / Strategy |
 | 09 | [Protecting Endpoints](#09--protecting-endpoints-auth-guard) | `auth` `dependency-injection` `guard` | DI Provider + Guard |
 | 10 | [Migrations (Alembic)](#10--database-migrations-alembic) | `alembic` `migrations` `db` | Versioned Migrations |
+| 11 | [Consistent Errors & Exception Handling](#11--consistent-errors--exception-handling) | `error-handling` `exception-handler` | Centralized Error Handler |
+| 12 | [Middleware & CORS](#12--middleware--cors) | `middleware` `cors` `request-id` | Middleware / Cross-cutting |
+| 13 | [Lifespan (Startup / Shutdown)](#13--lifespan-startup--shutdown) | `lifespan` `startup-shutdown` | Lifespan Context Manager |
+| 14 | [Pagination, Filtering & Sorting](#14--pagination-filtering--sorting) | `pagination` `filtering` `sorting` | Reusable Query Dependency |
+| 15 | [Testing](#15--testing) | `testing` `pytest` `dependency-overrides` | Test Doubles via DI |
+
+> **§01–10** are the core request path (build a working, secured CRUD API).
+> **§11–15** are the cross-cutting concerns layered on top to make it production-shaped.
+> Two earlier sections were also upgraded: **§04** now covers the shared base model +
+> Pydantic v2 validators, and **§04/§14** share the `Page` envelope.
 
 ---
 
@@ -279,6 +306,7 @@ should enforce/optimize, and `created_at`/`updated_at` via `default_factory=utcn
 <summary><b>The API's contract — separate from the table, on purpose.</b></summary>
 
 ```text
+src/schemas.py        🟠 BaseSchema (shared base) · Page[T] · ErrorResponse
 src/books/schema.py   🟠 BookCreate · BookUpdate
 src/auth/schema.py    🟠 UserCreate · UserRead · TokenPair · RefreshRequest
 ```
@@ -288,6 +316,31 @@ API boundary*. Keeping them separate lets you (a) validate exactly what a client
 send and (b) control exactly what you send back. The classic payoff: `UserCreate` takes
 a `password`, but `UserRead` has **no** password field — so a hash can never leak in a
 response, even by accident.
+
+**Shared base model (`src/schemas.py`).** Every schema inherits one `BaseSchema` so
+serialization behaves identically everywhere instead of repeating `model_config`:
+```python
+class BaseSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True,     # build a response from an ORM object
+                              str_strip_whitespace=True) # trim every incoming string
+```
+
+**Pydantic v2 validators** — two flavors, both used in `auth/schema.py`:
+```python
+class UserCreate(BaseSchema):
+    @field_validator("username", "email")               # one field-level rule, several fields
+    @classmethod
+    def normalize_case(cls, v: str) -> str:
+        return v.lower()                                 # case-insensitive logins
+
+    @model_validator(mode="after")                       # cross-field rule (needs >1 field)
+    def password_must_not_contain_username(self):
+        if self.username in self.password.lower():
+            raise ValueError("password must not contain the username")
+        return self
+```
+`field_validator` normalizes/validates a single field (here shared by two); `model_validator`
+sees the whole object, for rules that span fields. Both raise `ValueError` → automatic `422`.
 
 **The code** (`src/auth/schema.py`):
 ```python
@@ -680,6 +733,255 @@ uv run alembic current | history   # inspect
 
 ---
 
+### 11 · Consistent Errors & Exception Handling
+
+**🏷 Tags:** `error-handling` · `exception-handler` · `api-design`
+
+<details>
+<summary><b>Every failure leaves the API in one predictable shape.</b></summary>
+
+```text
+src/exceptions.py   🟢 AppException · NotFoundError · ConflictError · register_exception_handlers
+src/main.py         🟢 register_exception_handlers(app)
+```
+
+**What & why it's here.** Left unchecked, every route invents its own error: one returns
+`{"detail": "..."}`, another a bare string, a third a 500 with a stack trace. Clients hate
+that. So we define **domain exceptions** and **one handler** that renders *every* failure
+as the same `{"error": {code, message, request_id}}` body — including FastAPI's own
+validation and HTTP errors.
+
+**The code** (`src/exceptions.py`):
+```python
+class AppException(Exception):           # base; subclasses set status_code + code
+    status_code = 500; code = "internal_error"; message = "Something went wrong"
+
+class NotFoundError(AppException):
+    status_code = 404; code = "not_found"; message = "Resource not found"
+
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(AppException)
+    async def _handle(request, exc):
+        return JSONResponse(exc.status_code,
+            {"error": {"code": exc.code, "message": exc.message,
+                       "request_id": getattr(request.state, "request_id", None)}})
+    # + handlers for RequestValidationError (422) and StarletteHTTPException (401 etc.)
+```
+
+**How it's used.** Routers/services raise a domain exception; the handler does the rest —
+no `HTTPException` boilerplate:
+```python
+if not book:
+    raise NotFoundError(f"Book {book_id} not found")   # → 404 in the standard shape
+```
+
+**Example response** (404):
+```json
+{ "error": { "code": "not_found", "message": "Book 3fa… not found", "request_id": "a1b2…" } }
+```
+The `request_id` ties the error to the log line from §12.
+
+**Pattern — Centralized Error Handler.**
+</details>
+
+---
+
+### 12 · Middleware & CORS
+
+**🏷 Tags:** `middleware` · `cors` · `request-id`
+
+<details>
+<summary><b>Cross-cutting behavior that wraps every request, in one place.</b></summary>
+
+```text
+src/middleware.py   🟢 RequestContextMiddleware  (request id + timing)
+src/main.py         🟢 app.add_middleware(...) + CORSMiddleware
+```
+
+**What & why it's here.** Some behavior must apply to *every* request and doesn't belong
+in any single endpoint: tagging each request with a trace **id**, **timing** it, and
+answering browser **CORS** preflights. Middleware wraps the whole request/response cycle,
+so it's the right home.
+
+**The code** (`src/middleware.py`):
+```python
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.state.request_id = request_id            # visible to routes & error handlers
+        start = time.perf_counter()
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Process-Time-ms"] = f"{(time.perf_counter()-start)*1000:.2f}"
+        return response
+```
+Wired in `main.py` (outermost is added last):
+```python
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(CORSMiddleware, allow_origins=Config.CORS_ORIGINS,
+                   allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+```
+
+**How it's used.** Nothing to call — it's automatic. Every response now carries
+`X-Request-ID` and `X-Process-Time-ms`, and that same id shows up in logs and error bodies.
+
+**Pattern — Middleware (cross-cutting concern).**
+</details>
+
+---
+
+### 13 · Lifespan (Startup / Shutdown)
+
+**🏷 Tags:** `lifespan` · `startup-shutdown`
+
+<details>
+<summary><b>One hook that runs on boot and on shutdown.</b></summary>
+
+```text
+src/main.py       🟢 @asynccontextmanager lifespan(app)
+src/db/main.py    🟢 dispose_engine()
+```
+
+**What & why it's here.** Resources that live for the whole app — connection pools,
+caches, clients — need clean setup and teardown. FastAPI's **lifespan** is the modern,
+single place for that (replacing scattered `@app.on_event` handlers). Here the DB pool is
+created lazily on first query, so startup is empty, but on shutdown we **dispose** the
+pool instead of leaking connections.
+
+**The code** (`src/main.py`):
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("starting up")        # ← startup: everything before yield
+    yield
+    await dispose_engine()            # ← shutdown: everything after yield
+    logger.info("shut down — engine disposed")
+
+app = FastAPI(title="Book Store API", version="1.0.0", lifespan=lifespan)
+```
+
+**How it's used.** Passed once to `FastAPI(lifespan=...)`. The `yield` splits startup from
+shutdown — same context-manager shape as the per-request `get_session` (§02), but scoped
+to the *whole app* instead of one request.
+
+**Pattern — Lifespan Context Manager.**
+</details>
+
+---
+
+### 14 · Pagination, Filtering & Sorting
+
+**🏷 Tags:** `pagination` · `filtering` · `sorting`
+
+<details>
+<summary><b>List endpoints return a page, not the whole table.</b></summary>
+
+```text
+src/dependencies.py    🟠 PaginationParams  (limit / offset / sort_by / order)
+src/schemas.py         🟠 Page[T]           (the list envelope)
+src/books/service.py   🟣 list_paginated(...)
+src/books/router.py    🔵 GET /books
+```
+
+**What & why it's here.** Returning every row doesn't scale. The three list conventions —
+**pagination**, **filtering**, **sorting** — are bundled into a reusable dependency and a
+consistent `Page` response so every list endpoint looks the same. Sorting is
+**whitelisted** so a client can't `getattr` an arbitrary attribute onto the model.
+
+**The code:**
+```python
+# dependencies.py — one reusable, validated params object (a "dependency as input")
+class PaginationParams:
+    def __init__(self, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                 sort_by: str = Query("created_at"), order: Literal["asc","desc"] = Query("desc")):
+        self.limit, self.offset, self.sort_by, self.order = limit, offset, sort_by, order
+
+# service.py — filter + whitelisted sort + count, returns (items, total)
+column = getattr(Book, sort_by if sort_by in _SORTABLE else "created_at")
+query = select(Book).where(*conditions).order_by((desc if order=="desc" else asc)(column)) \
+                    .limit(limit).offset(offset)
+
+# router.py — assemble the Page envelope
+@router.get("", response_model=Page[Book])
+async def list_books(pagination: PaginationParams = Depends(),
+                     author: str | None = Query(None), service = Depends(get_book_service)):
+    items, total = await service.list_paginated(**vars(pagination), author=author)
+    return Page(items=items, total=total, limit=pagination.limit, offset=pagination.offset)
+```
+
+**Example.**
+```
+GET /api/v1/books?author=lovelace&limit=2&sort_by=year&order=asc
+→ { "items": [ … 2 books … ], "total": 3, "limit": 2, "offset": 0 }
+```
+
+> **DI aside (reusable gates + caching).** `PaginationParams` shows a dependency used as
+> plain validated *input*, not a service — dependencies are general-purpose gates.
+> FastAPI also **caches** a dependency within a single request: `get_user_service` is
+> requested by both `get_current_user` and the endpoint, but runs **once** per request.
+
+**Pattern — Reusable Query Dependency + list envelope.**
+</details>
+
+---
+
+### 15 · Testing
+
+**🏷 Tags:** `testing` · `pytest` · `dependency-overrides`
+
+<details>
+<summary><b>Drive the real app in-process — no server, no Postgres.</b></summary>
+
+```text
+tests/conftest.py     🧪 in-memory SQLite session · AsyncClient · auth override
+tests/test_books.py   🧪 CRUD, pagination/filter, error + validation shapes
+tests/test_auth.py    🧪 register/login, validators, duplicate-email conflict
+```
+
+**What & why it's here.** Tests exercise the real routes, services, and SQL — but fast and
+isolated. Two swaps make that possible via `app.dependency_overrides`:
+- **DB:** replace `get_session` with a throwaway **in-memory SQLite** session (real SQL,
+  no Postgres). 
+- **Auth:** replace `get_current_user` with a **fake user**, so protected routes are
+  reachable without minting JWTs.
+
+The client talks to the ASGI app **directly** through `httpx.ASGITransport` — no port, no
+`uvicorn`.
+
+**The code** (`tests/conftest.py`, trimmed):
+```python
+@pytest_asyncio.fixture
+async def client(session):
+    async def _override(): yield session
+    app.dependency_overrides[get_session] = _override
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
+
+@pytest.fixture
+def auth_client(client):                      # same client, but auth is bypassed
+    app.dependency_overrides[get_current_user] = lambda: User(id=uuid4(), …, is_active=True)
+    return client
+```
+A test then reads like a client:
+```python
+async def test_create_then_fetch_book(auth_client):
+    created = await auth_client.post("/api/v1/books", json={...})
+    assert created.status_code == 201
+```
+
+**How to run:**
+```bash
+uv sync --group dev     # first time: installs pytest, pytest-asyncio, httpx, aiosqlite
+uv run pytest -q        # → 12 passed
+```
+
+**Pattern — Test Doubles via DI (`dependency_overrides`).**
+</details>
+
+---
+
 ## Appendix — Quick Start
 
 ```bash
@@ -687,6 +989,7 @@ uv sync                                   # install deps
 cp .env.example .env                      # set DATABASE_URL + JWT_SECRET_KEY
 uv run alembic upgrade head               # build the schema (§10)
 uv run uvicorn src.main:app --reload      # run → http://localhost:8000/docs
+uv run pytest -q                          # run the tests (§15) → 12 passed
 ```
 Then in Swagger (`/docs`): **register → Authorize** (email as username) → call protected `/books`.
 

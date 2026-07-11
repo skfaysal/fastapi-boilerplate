@@ -1,9 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.main import get_session
+from src.dependencies import PaginationParams
+from src.exceptions import NotFoundError
+from src.schemas import Page
 from src.auth.dependencies import get_current_user
 from src.books.model import Book
 from src.books.schema import BookCreate, BookUpdate
@@ -18,16 +21,27 @@ async def get_book_service(session: AsyncSession = Depends(get_session)) -> Book
     return BookService(session)
 
 
-@router.get("", response_model=list[Book])
-async def list_books(service: BookService = Depends(get_book_service)):
-    return await service.get_all()
+@router.get("", response_model=Page[Book])
+async def list_books(
+    pagination: PaginationParams = Depends(),
+    author: str | None = Query(None, description="Filter by author (case-insensitive substring)"),
+    service: BookService = Depends(get_book_service),
+):
+    items, total = await service.list_paginated(
+        limit=pagination.limit,
+        offset=pagination.offset,
+        sort_by=pagination.sort_by,
+        order=pagination.order,
+        author=author,
+    )
+    return Page(items=items, total=total, limit=pagination.limit, offset=pagination.offset)
 
 
 @router.get("/{book_id}", response_model=Book)
 async def get_book(book_id: UUID, service: BookService = Depends(get_book_service)):
     book = await service.get_by_id(book_id)
     if not book:
-        raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+        raise NotFoundError(f"Book {book_id} not found")
     return book
 
 
@@ -40,7 +54,7 @@ async def create_book(payload: BookCreate, service: BookService = Depends(get_bo
 async def update_book(book_id: UUID, payload: BookUpdate, service: BookService = Depends(get_book_service)):
     book = await service.update(book_id, payload)
     if not book:
-        raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+        raise NotFoundError(f"Book {book_id} not found")
     return book
 
 
@@ -48,4 +62,4 @@ async def update_book(book_id: UUID, payload: BookUpdate, service: BookService =
 async def delete_book(book_id: UUID, service: BookService = Depends(get_book_service)):
     deleted = await service.delete(book_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+        raise NotFoundError(f"Book {book_id} not found")

@@ -9,6 +9,7 @@ from src.auth.dependencies import (
     get_token_service,
     get_user_service,
 )
+from src.exceptions import ConflictError, NotFoundError
 from src.auth.model import User
 from src.auth.schema import RefreshRequest, TokenPair, UserCreate, UserRead
 from src.auth.service import TokenAlreadyUsedError, TokenService, UserService
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def register_user(payload: UserCreate, service: UserService = Depends(get_user_service)):
     user = await service.create(payload)
     if not user:
-        raise HTTPException(status_code=409, detail=f"User with email {payload.email} already exists")
+        raise ConflictError(f"User with email {payload.email} already exists")
     return user
 
 
@@ -100,7 +101,7 @@ async def get_user(
 ):
     user = await service.get_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        raise NotFoundError(f"User {user_id} not found")
     return user
 
 
