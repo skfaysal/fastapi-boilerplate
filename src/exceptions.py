@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("app")
@@ -39,6 +40,12 @@ class ConflictError(AppException):
     message = "Resource already exists"
 
 
+class ForbiddenError(AppException):
+    status_code = 403
+    code = "forbidden"
+    message = "Not allowed"
+
+
 def _body(code: str, message: str, request_id: str | None, **extra) -> dict:
     return {"error": {"code": code, "message": message, "request_id": request_id, **extra}}
 
@@ -67,6 +74,13 @@ def register_exception_handlers(app: FastAPI) -> None:
                 _request_id(request),
                 detail=jsonable_encoder(exc.errors()),
             ),
+        )
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _handle_rate_limit(request: Request, exc: RateLimitExceeded):
+        return JSONResponse(
+            status_code=429,
+            content=_body("rate_limited", "Too many requests, slow down", _request_id(request)),
         )
 
     @app.exception_handler(StarletteHTTPException)

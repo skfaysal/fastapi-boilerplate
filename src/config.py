@@ -2,6 +2,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # "dev" | "prod" — gates interactive docs and can switch log verbosity.
+    ENVIRONMENT: str = "dev"
+
     DATABASE_URL: str
 
     # JWT / auth

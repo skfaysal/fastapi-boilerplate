@@ -51,7 +51,7 @@ flowchart LR
     ALEDIR[["📂 alembic"]]
     TESTSDIR[["📂 tests"]]
     ROOT --- SRC & ALEDIR & TESTSDIR
-    SRC --- CFG & MAIN & DBMAIN & SCHEMAS & DEPS & EXC & MW & BOOKSDIR & AUTHDIR
+    SRC --- CFG & MAIN & DBMAIN & SCHEMAS & DEPS & EXC & MW & LOG & RL & BOOKSDIR & AUTHDIR
     BOOKSDIR --- BMODEL & BSCHEMA & BSVC & BROUTER
     AUTHDIR --- AMODEL & ASCHEMA & AUTILS & ASVC & ADEP & AROUTER
     ALEDIR --- ENV & VERS
@@ -64,6 +64,8 @@ flowchart LR
     DEPS["📄 dependencies.py"]
     EXC["📄 exceptions.py"]
     MW["📄 middleware.py"]
+    LOG["📄 logging_config.py"]
+    RL["📄 ratelimit.py"]
     BMODEL["📄 model.py"]
     BSCHEMA["📄 schema.py"]
     BSVC["📄 service.py"]
@@ -85,6 +87,8 @@ flowchart LR
     DEPS --> nDEP["Shared deps: pagination / sort params"]
     EXC --> nEXC["Custom errors → one JSON error shape"]
     MW --> nMW["Every request gets an id + timing header"]
+    LOG --> nLOG["JSON logs stamped with request &amp; user id"]
+    RL --> nRL["Shared rate limiter (login / refresh)"]
 
     BMODEL --> nBM["Defines the Book table"]
     BSCHEMA --> nBSC["Validate book data + field validators"]
@@ -114,13 +118,13 @@ flowchart LR
     classDef test   stroke:#0d9488,stroke-width:2px;
 
     class ROOT,SRC,BOOKSDIR,AUTHDIR,ALEDIR,TESTSDIR folder;
-    class CFG,MAIN,DBMAIN,SCHEMAS,DEPS,EXC,MW,BMODEL,BSCHEMA,BSVC,BROUTER,AMODEL,ASCHEMA,AUTILS,ASVC,ADEP,AROUTER,ENV,VERS,TCONF file;
-    class nCFG,nMAIN,nDB,nEXC,nMW entry;
+    class CFG,MAIN,DBMAIN,SCHEMAS,DEPS,EXC,MW,LOG,RL,BMODEL,BSCHEMA,BSVC,BROUTER,AMODEL,ASCHEMA,AUTILS,ASVC,ADEP,AROUTER,ENV,VERS,TCONF file;
+    class nCFG,nMAIN,nDB,nEXC,nMW,nLOG entry;
     class nBM,nAM model;
     class nBSC,nASC,nSC,nDEP schema;
     class nBSV,nASV service;
     class nBR,nAR router;
-    class nAU,nAD sec;
+    class nAU,nAD,nRL sec;
     class nENV,nVER mig;
     class nT test;
 ```
@@ -156,10 +160,16 @@ The repo built up in these ten steps. Click any section to expand it.
 | 13 | [Lifespan (Startup / Shutdown)](#13--lifespan-startup--shutdown) | `lifespan` `startup-shutdown` | Lifespan Context Manager |
 | 14 | [Pagination, Filtering & Sorting](#14--pagination-filtering--sorting) | `pagination` `filtering` `sorting` | Reusable Query Dependency |
 | 15 | [Testing](#15--testing) | `testing` `pytest` `dependency-overrides` | Test Doubles via DI |
+| 16 | [Rate Limiting](#16--rate-limiting) | `rate-limiting` `security` `brute-force` | Token-bucket Guard |
+| 17 | [Structured JSON Logging](#17--structured-json-logging) | `logging` `observability` `request-id` | Context-stamped Logs |
+| 18 | [Environment-Gated Docs](#18--environment-gated-docs) | `security` `config` `docs` | Env Feature Flag |
+| 19 | [RBAC — Admin Authorization](#19--rbac--admin-authorization) | `rbac` `authorization` `dependency` | Role Gate (DI) |
+| 20 | [Secrets Management](#20--secrets-management) | `secrets` `ops` `runbook` | Ops Runbook |
 
 > **§01–10** are the core request path (build a working, secured CRUD API).
-> **§11–15** are the cross-cutting concerns layered on top to make it production-shaped.
-> Two earlier sections were also upgraded: **§04** now covers the shared base model +
+> **§11–15** are cross-cutting concerns that make it production-*shaped*.
+> **§16–20** are production *hardening & security* (roadmap Phase 2).
+> Two earlier sections were also upgraded: **§04** covers the shared base model +
 > Pydantic v2 validators, and **§04/§14** share the `Page` envelope.
 
 ---
@@ -978,6 +988,187 @@ uv run pytest -q        # → 12 passed
 ```
 
 **Pattern — Test Doubles via DI (`dependency_overrides`).**
+</details>
+
+---
+
+### 16 · Rate Limiting
+
+**🏷 Tags:** `rate-limiting` · `security` · `brute-force`
+
+<details>
+<summary><b>Cap how often the auth endpoints can be hit.</b></summary>
+
+```text
+src/ratelimit.py    🔴 limiter (slowapi, keyed by client IP)
+src/auth/router.py  🔵 @limiter.limit on /login and /refresh
+src/exceptions.py   🟢 429 handler → standard error shape
+src/main.py         🟢 app.state.limiter = limiter
+```
+
+**What & why it's here.** `/auth/login` and `/auth/refresh` are the brute-forceable
+endpoints (a stateless JWT API can't lock accounts easily). A rate limit caps attempts per
+client so guessing passwords/tokens becomes impractical.
+
+**The code:**
+```python
+# ratelimit.py — one shared limiter (in-memory; point at Redis for multi-worker)
+limiter = Limiter(key_func=get_remote_address)
+
+# auth/router.py — decorate the endpoint; slowapi needs `request: Request` to read the IP
+@router.post("/login", response_model=TokenPair)
+@limiter.limit("5/minute")
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), ...):
+    ...
+```
+`main.py` sets `app.state.limiter = limiter`; `exceptions.py` maps `RateLimitExceeded` → a
+`429` in the same `{"error": {...}}` shape.
+
+**Example.** A 6th login within a minute →
+```json
+{ "error": { "code": "rate_limited", "message": "Too many requests, slow down", "request_id": "…" } }
+```
+
+**Pattern — Token-bucket Guard (per-IP).**
+</details>
+
+---
+
+### 17 · Structured JSON Logging
+
+**🏷 Tags:** `logging` · `observability` · `request-id`
+
+<details>
+<summary><b>One JSON line per log, stamped with request &amp; user id.</b></summary>
+
+```text
+src/logging_config.py   🟢 JSONFormatter · ContextFilter · request_id / user_id contextvars
+src/middleware.py       🟢 sets request_id contextvar per request
+src/auth/dependencies.py 🔴 sets user_id contextvar + logs auth failures
+```
+
+**What & why it's here.** `print`/plain logs are useless at scale — you can't filter or
+correlate them. Structured JSON logs, each carrying the `request_id` (and `user_id` once
+authenticated), let you trace one request across every line it produced and feed a log
+aggregator.
+
+**The code** (`src/logging_config.py`):
+```python
+request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({"level": record.levelname, "message": record.getMessage(),
+                           "request_id": getattr(record, "request_id", None),
+                           "user_id": getattr(record, "user_id", None)})
+```
+The middleware sets `request_id_ctx` per request; `get_current_user` sets `user_id_ctx`; a
+`ContextFilter` copies both onto every record so the formatter can emit them.
+
+**Example line:**
+```json
+{"level": "WARNING", "logger": "app", "message": "auth failed: bad login for x", "request_id": "a1b2…", "user_id": null}
+```
+
+**Pattern — Context-stamped structured logs (contextvars + filter).**
+</details>
+
+---
+
+### 18 · Environment-Gated Docs
+
+**🏷 Tags:** `security` · `config` · `docs`
+
+<details>
+<summary><b>Interactive docs in dev, hidden in prod.</b></summary>
+
+```text
+src/config.py   🟢 ENVIRONMENT = "dev" | "prod"
+src/main.py     🟢 disables /docs, /redoc, /openapi.json when not dev
+```
+
+**What & why it's here.** Swagger UI is great locally but in production it publishes your
+entire API surface (every route, schema, auth flow) to anyone. Gate it behind the
+environment so it simply doesn't exist in prod.
+
+**The code** (`src/main.py`):
+```python
+_docs = {} if Config.ENVIRONMENT == "dev" else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+app = FastAPI(title="Book Store API", version="1.0.0", lifespan=lifespan, **_docs)
+```
+
+**How it's used.** Set `ENVIRONMENT=prod` in the deployed environment. `GET /docs` then
+returns `404`; `dev` (the default) keeps them on.
+
+**Pattern — Environment feature flag.**
+</details>
+
+---
+
+### 19 · RBAC — Admin Authorization
+
+**🏷 Tags:** `rbac` · `authorization` · `dependency`
+
+<details>
+<summary><b>Beyond "is authenticated" — "is allowed".</b></summary>
+
+```text
+src/auth/model.py         🟡 User.is_admin
+src/auth/dependencies.py  🔴 require_admin (builds on get_current_user)
+src/auth/router.py        🔵 GET /auth/{id} now requires admin
+alembic/versions/…is_admin 🟠 migration adds the column
+```
+
+**What & why it's here.** Authentication (§09) proves *who* you are; authorization decides
+*what you may do*. `GET /auth/{user_id}` previously let any logged-in user read any other
+user — a real authorization gap. A `require_admin` gate closes it, and the pattern scales
+to any role check.
+
+**The code** (`src/auth/dependencies.py`):
+```python
+async def require_admin(user: User = Depends(get_current_user)) -> User:
+    if not user.is_admin:
+        raise ForbiddenError("Admin privileges required")   # → 403
+    return user
+```
+Used exactly like `get_current_user`, just stricter:
+```python
+@router.get("/{user_id}", response_model=UserRead)
+async def get_user(user_id: UUID, service = Depends(get_user_service),
+                   _: User = Depends(require_admin)): ...
+```
+The new `is_admin` column ships as an Alembic migration (`alembic upgrade head`).
+
+**Pattern — Role Gate (a dependency that layers on another dependency).**
+</details>
+
+---
+
+### 20 · Secrets Management
+
+**🏷 Tags:** `secrets` · `ops` · `runbook`
+
+<details>
+<summary><b>Handling and rotating the app's secrets.</b></summary>
+
+```text
+.env            🔒 real secrets (gitignored)
+.env.example    📋 committed template (placeholders only)
+docs/secrets_runbook.md   📓 rotation + leak-response steps
+```
+
+**What & why it's here.** Secrets (`JWT_SECRET_KEY`, `DATABASE_URL`) must never be
+committed, must differ per environment, and need a known procedure to rotate — especially
+after a leak. That procedure is an *operational* artifact, so it lives as a short runbook,
+not in code.
+
+**Key points** (full steps in [`secrets_runbook.md`](./secrets_runbook.md)):
+- `.env` is gitignored; only `.env.example` is committed. Verify: `git check-ignore .env`.
+- One `JWT_SECRET_KEY` per environment; generate with `secrets.token_urlsafe(64)`.
+- Rotating the key invalidates **all** tokens → a forced global re-login (the intended
+  response to a suspected leak). In prod, inject secrets from the platform, not a file.
+
+**Pattern — Ops runbook (documented, repeatable procedure).**
 </details>
 
 ---

@@ -51,3 +51,22 @@ async def test_wrong_password_is_401(client):
         data={"username": "alice@example.com", "password": "wrong-password"},
     )
     assert resp.status_code == 401
+
+
+async def test_login_is_rate_limited(client):
+    # The 6th attempt within the window exceeds the 5/minute limit.
+    from uuid import uuid4
+
+    data = {"username": f"{uuid4()}@example.com", "password": "whatever12345"}
+    statuses = [(await client.post("/api/v1/auth/login", data=data)).status_code for _ in range(6)]
+    assert statuses[-1] == 429
+    assert 401 in statuses[:5]      # earlier attempts were normal auth failures
+
+
+async def test_admin_gate_blocks_non_admin(auth_client):
+    from uuid import uuid4
+
+    # auth_client is authenticated as a non-admin fake user → require_admin rejects.
+    resp = await auth_client.get(f"/api/v1/auth/{uuid4()}")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"

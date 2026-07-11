@@ -30,6 +30,14 @@ from src.auth.dependencies import get_current_user  # noqa: E402
 from src.auth.model import User  # noqa: E402
 from src.db.main import get_session  # noqa: E402
 from src.main import app  # noqa: E402
+from src.ratelimit import limiter  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Clear rate-limit counters between tests so the shared limiter can't leak state."""
+    limiter.reset()
+    yield
 
 
 @pytest_asyncio.fixture

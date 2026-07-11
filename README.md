@@ -68,6 +68,7 @@ The API is now live at **http://localhost:8000**.
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | | `15` | Short-lived access token |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | | `7` | Long-lived refresh token |
 | `CORS_ORIGINS` | | `["*"]` | Allowed browser origins (lock down in prod) |
+| `ENVIRONMENT` | | `dev` | `prod` hides `/docs`, `/redoc`, `/openapi.json` |
 
 ---
 
@@ -79,11 +80,11 @@ and `/auth/{id}` routes require a valid **access token** (`Authorization: Bearer
 | Method | Path | Auth | Body | Purpose |
 |---|---|---|---|---|
 | `POST` | `/auth/register` | — | JSON `UserCreate` | Create an account |
-| `POST` | `/auth/login` | — | **form** `username`(=email) + `password` | Get access + refresh tokens |
-| `POST` | `/auth/refresh` | refresh token | JSON `{refresh_token}` | Swap for a fresh token pair |
+| `POST` | `/auth/login` | — | **form** `username`(=email) + `password` | Get access + refresh tokens (rate-limited 5/min) |
+| `POST` | `/auth/refresh` | refresh token | JSON `{refresh_token}` | Swap for a fresh token pair (rate-limited 10/min) |
 | `POST` | `/auth/logout` | refresh token | JSON `{refresh_token}` | Revoke the refresh token |
 | `GET` | `/auth/me` | access token | — | The current user |
-| `GET` | `/auth/{user_id}` | access token | — | Fetch a user by id |
+| `GET` | `/auth/{user_id}` | **admin** | — | Fetch a user by id (requires `is_admin`) |
 | `GET` | `/books` | access token | — | List books (paginated/filtered/sorted) |
 | `GET` | `/books/{book_id}` | access token | — | One book |
 | `POST` | `/books` | access token | JSON `BookCreate` | Create a book |
