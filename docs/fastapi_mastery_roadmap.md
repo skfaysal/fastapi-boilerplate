@@ -61,6 +61,8 @@ What's missing (and it's a lot — this is normal at this stage): tests, rate li
 
 **Topics to master**
 - Connection pooling tuning (pool size, `pool_pre_ping`) for async SQLAlchemy under load
+- Polyglot persistence: knowing when a document store (MongoDB) beats a relational table — variable-shape, append-only, schema-free data (audit/activity logs, event payloads) vs rigid entities that belong in Postgres
+- Async NoSQL driver integration (`motor`): lazy connections, fast server-selection timeouts, and treating a secondary store as *optional* so the app still boots when it's down
 - Caching (Redis) — cache-aside pattern, invalidation
 - Background task queues: `BackgroundTasks` (fire-and-forget, <1s only) vs Celery/Arq/RQ (durable, retryable) — know when each is wrong
 - Retry/backoff (`tenacity`), timeouts, and circuit breakers for any outbound call (DB, third-party API, later: LLM)
@@ -69,11 +71,12 @@ What's missing (and it's a lot — this is normal at this stage): tests, rate li
 - CI (GitHub Actions: lint, type-check, test, build image)
 
 **Experiments in this project**
-1. Add Redis via docker-compose; cache `GET /books` and `GET /auth/{id}` with a short TTL, invalidate on write.
-2. Introduce Arq (lightweight, async-native) for one real async job — e.g., "send welcome email on register" — instead of a fire-and-forget `BackgroundTasks` call, specifically to feel the durability difference.
-3. Wrap the DB session dependency with `tenacity` retry on transient connection errors; add a request timeout middleware.
-4. Write a multi-stage `Dockerfile` (build deps with `uv`, slim runtime image) and a `docker-compose.yml` (app + postgres + redis).
-5. Add a GitHub Actions workflow: `ruff check`, `pytest`, build the Docker image on every PR.
+1. Add MongoDB alongside Postgres (polyglot persistence) via `motor`: a `src/activity/` module that writes an append-only *activity log* — login, login-failed, book-created — where each event carries a different free-form `detail` payload, which is exactly why a schema-free document store fits better than a SQL table. Keep the layered router → service pattern from the SQL side. Expose an admin-only `GET /activity` (reuse the Phase 2 `require_admin` RBAC gate) with the existing pagination shape. Key design points to internalize: (a) the client connects lazily with a short `serverSelectionTimeoutMS` so the app boots even when Mongo is down; (b) audit writes are *best-effort* — a Mongo hiccup is logged and swallowed, never allowed to break the user's request; (c) `ping_mongo`/`close_mongo` hook into the `lifespan` handler next to the SQL engine teardown. Postgres stays the source of truth for entities; Mongo only holds the log. *(Implemented — see [db/mongo.py](../src/db/mongo.py) and [activity/](../src/activity).)*
+2. Add Redis via docker-compose; cache `GET /books` and `GET /auth/{id}` with a short TTL, invalidate on write.
+3. Introduce Arq (lightweight, async-native) for one real async job — e.g., "send welcome email on register" — instead of a fire-and-forget `BackgroundTasks` call, specifically to feel the durability difference.
+4. Wrap the DB session dependency with `tenacity` retry on transient connection errors; add a request timeout middleware.
+5. Write a multi-stage `Dockerfile` (build deps with `uv`, slim runtime image) and a `docker-compose.yml` (app + postgres + redis).
+6. Add a GitHub Actions workflow: `ruff check`, `pytest`, build the Docker image on every PR.
 
 ---
 
