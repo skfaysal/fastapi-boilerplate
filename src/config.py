@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     MONGO_URL: str = "mongodb://localhost:27017"
     MONGO_DB: str = "bookstore"
 
+    # Kafka — event bus in front of the activity log (see src/kafka.py)
+    KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
+
     model_config = {"env_file": ".env"}
 
 

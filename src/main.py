@@ -8,6 +8,7 @@ from src.config import Config
 from src.db.main import dispose_engine
 from src.db.mongo import close_mongo, ping_mongo
 from src.exceptions import register_exception_handlers
+from src.kafka import start_producer, stop_producer
 from src.logging_config import configure_logging
 from src.middleware import RequestContextMiddleware
 from src.ratelimit import limiter
@@ -33,7 +34,13 @@ async def lifespan(app: FastAPI):
         logger.info("mongo connected")
     except Exception as exc:  # noqa: BLE001 — Mongo is optional; activity writes are best-effort
         logger.warning("mongo not reachable at startup: %s", exc)
+    try:
+        await start_producer()
+        logger.info("kafka producer started")
+    except Exception as exc:  # noqa: BLE001 — Kafka is optional; activity events are best-effort
+        logger.warning("kafka not reachable at startup: %s", exc)
     yield
+    await stop_producer()
     await dispose_engine()
     close_mongo()
     logger.info("shut down — engine disposed")

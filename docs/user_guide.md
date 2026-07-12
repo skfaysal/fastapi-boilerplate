@@ -14,10 +14,12 @@ proof each feature works. Commands are copy-paste-runnable (they use `curl` + `j
 ## 0. Start the server
 
 ```bash
+docker compose up -d                      # Postgres + MongoDB + Kafka (see §22)
 uv sync                                   # install deps
 cp .env.example .env                      # then edit: set DATABASE_URL + JWT_SECRET_KEY
 uv run alembic upgrade head               # build schema (incl. is_admin column)
 uv run uvicorn src.main:app --reload      # → http://localhost:8000
+uv run python -m src.activity.consumer    # separate terminal — Kafka → Mongo writer (§22)
 ```
 
 Set a base URL for every command below:
@@ -47,6 +49,7 @@ export BASE=http://localhost:8000/api/v1
 | Secrets (§20) | gitignore + rotation | [12](#12-secrets-20) |
 | Tests (§15) | `pytest` | [13](#13-run-the-test-suite-15) |
 | MongoDB activity log (§21) | `/activity` audit feed | [14](#14-mongodb-activity-log-21) |
+| Kafka-backed activity pipeline (§22) | producer → topic → consumer → Mongo | [15](#15-kafka-backed-activity-pipeline-22) |
 
 ---
 
@@ -317,38 +320,19 @@ uv run pytest tests/test_auth.py -v    # watch individual auth/rate-limit/admin 
 
 ## 14. MongoDB activity log (§21)
 
-The app writes an audit event to **MongoDB** on `login`, `login_failed`, and `book_created`,
-and exposes them at `GET /activity` (admin-only). This is the NoSQL / polyglot-persistence piece.
+The app writes an audit event on `login`, `login_failed`, and `book_created`, and exposes
+them at `GET /activity` (admin-only). This is the NoSQL / polyglot-persistence piece — Postgres
+stays the source of truth for entities (users, books), Mongo only holds this append-only event feed.
 
-### Set up MongoDB locally with Docker
+Since §22, the request path never writes to Mongo directly — it publishes to **Kafka**, and a
+separate consumer process does the actual Mongo insert. See §22 for the infrastructure and the
+full producer → topic → consumer walkthrough; this section is about the *read* side and the
+event shape, which are unchanged by that move.
 
-You don't need to install MongoDB — run it in a container.
-
+**Generate some events, then read them** (needs an **admin** token — see §11, and the consumer
+from §22 running so events actually reach Mongo):
 ```bash
-# Start a Mongo container (data persists in the named volume across restarts):
-docker run -d --name bp-mongo -p 27017:27017 -v bp-mongo-data:/data/db mongo:7
-
-# Verify it's up:
-docker ps --filter name=bp-mongo                 # should be "Up"
-docker exec bp-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 })'   # → { ok: 1 }
-```
-
-That's it — the app's default `MONGO_URL=mongodb://localhost:27017` already points at it, so
-no config change is needed. Restart the API server and you should see `mongo connected` in its logs.
-
-Handy container commands:
-```bash
-docker stop bp-mongo        # pause it
-docker start bp-mongo       # resume (data is still there)
-docker rm -f bp-mongo       # remove it; add `docker volume rm bp-mongo-data` to wipe data too
-# peek at the stored events directly:
-docker exec bp-mongo mongosh bookstore --quiet --eval 'db.activity.find().sort({ts:-1}).limit(3)'
-```
-> The app boots fine **without** Mongo — activity writes are best-effort — but the feed will be empty.
-
-**Generate some events, then read them** (needs an **admin** token — see §11):
-```bash
-# these actions each record an event:
+# these actions each publish an event (to Kafka — see §22 to have them land in Mongo):
 curl -s -X POST $BASE/auth/login -d "username=alice@example.com&password=supersecret123" > /dev/null   # "login"
 curl -s -X POST $BASE/books -H "Authorization: Bearer $ACCESS" -H "Content-Type: application/json" \
   -d '{"title":"Event Source","author":"A B","year":2024,"price":10}' > /dev/null                      # "book_created"
@@ -366,7 +350,159 @@ curl -s "$BASE/activity?limit=5" -H "Authorization: Bearer $ACCESS" | jq
 **✅ Proves:** two databases running side by side — Postgres for entities, Mongo for the
 event stream — and that different event types carry different `detail` shapes (why it's NoSQL).
 
-As a non-admin, `GET /activity` → `403` (same RBAC gate as §11). Tear down: `docker stop bp-mongo`.
+As a non-admin, `GET /activity` → `403` (same RBAC gate as §11).
+
+---
+
+## 15. Kafka-backed activity pipeline (§22)
+
+```
+auth/router.py, books/router.py        (login, login_failed, book_created)
+        │
+        │  activity.record(type, user_id, detail)
+        ▼
+activity/service.py                     PRODUCER — publishes, never touches Mongo
+        │
+        │  send_and_wait()
+        ▼
+Kafka topic "activity-events"           (src/kafka.py — broker + topic config)
+        │
+        │  consumed by group "activity-mongo-writer"
+        ▼
+activity/consumer.py                    CONSUMER — separate process
+        │
+        │  insert_one(event); commit offset only after this succeeds
+        ▼
+MongoDB "activity" collection
+        │
+        │  find().sort(ts, -1)
+        ▼
+activity/router.py                      GET /activity (admin-only) — reads Mongo, never touches Kafka
+```
+
+**Which endpoints produce, and when the consumer picks it up:**
+
+- `POST /auth/login` produces a `login` event on success or a `login_failed` event on bad
+  credentials. `POST /books` produces a `book_created` event. In all three cases, the producer
+  call (`activity.record(...)` → Kafka `send_and_wait`) happens **inside the request** — it's the
+  last thing the endpoint does before returning the HTTP response, and the response does not wait
+  on Mongo at all, only on Kafka accepting the message.
+- The consumer runs in a **separate, always-running process** (`uv run python -m
+  src.activity.consumer`), not inside the request and not triggered by it. It's continuously
+  polling the `activity-events` topic in the background; whenever a new message appears, it picks
+  it up — could be milliseconds after the endpoint published it, or later if the consumer was
+  briefly down (Kafka just holds the message until something in the `activity-mongo-writer` group
+  reads it). Only at that point, in that separate process, does the event actually get
+  `insert_one`'d into Mongo. The API request that produced the event has already finished and
+  returned long before this happens.
+
+| File | Role | Does with the data |
+|---|---|---|
+| `auth/router.py`, `books/router.py` | caller | fires `activity.record(...)` on login / login_failed / book_created |
+| `src/activity/service.py` | **producer** | serializes the event, publishes it to the `activity-events` topic — never touches Mongo |
+| `src/kafka.py` | broker client | producer + consumer config, topic name, nothing else |
+| `src/activity/consumer.py` | **consumer** (separate process, group `activity-mongo-writer`) | reads the topic, `insert_one`s each event into Mongo, commits the offset only after that write succeeds |
+| MongoDB `activity` collection | store | holds what the consumer wrote — the only thing `GET /activity` ever reads |
+| `src/activity/router.py` | reader | `GET /activity` reads Mongo directly — it never touches Kafka |
+
+One producer, one topic, one consumer group today — the point of the topic existing at all is
+that more consumers (fraud detection, notifications) could subscribe later without changing
+`auth/router.py` or `books/router.py`.
+
+### 1. Start the infrastructure
+
+All three datastores (Postgres, MongoDB, Kafka) now come from one Compose file:
+
+```bash
+docker compose up -d
+docker compose ps     # bp-postgres, bp-mongo, bp-kafka — all "Up"
+```
+
+`docker-compose.yml` reuses the **same named volumes** the standalone Postgres/Mongo containers
+already had (`postgres_data`, `bp-mongo-data`, marked `external: true` in the compose file) — so
+switching to Compose does not lose any existing data. Kafka is a fresh single-node, KRaft-mode
+broker (no Zookeeper) — fine for local/dev; a real deployment would run multiple brokers with a
+replication factor above 1.
+
+```bash
+# Confirm the broker is actually accepting connections:
+docker exec bp-kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092
+```
+
+### 2. Start the API and the consumer (two separate processes)
+
+```bash
+uv run uvicorn src.main:app --reload        # terminal 1 — the API (Kafka producer lives inside it)
+uv run python -m src.activity.consumer      # terminal 2 — Kafka → Mongo writer
+```
+
+You should see `kafka producer started` in the API's startup logs (right after `mongo connected`),
+and `started — topic=activity-events group=activity-mongo-writer` from the consumer.
+
+**Why a separate process for the consumer**, not a background task inside the API: it decouples
+the Mongo writer's lifecycle from the API's. Either can crash, restart, or (in a real deployment)
+scale independently, without the other noticing — the same shape a production consumer worker
+would have. This is the one piece of this repo that is *not* just `uv run uvicorn` — treat it
+like any other required process (a systemd unit, a k8s Deployment, a `Procfile` entry).
+
+### 3. Watch an event flow through, end to end
+
+```bash
+# 1. trigger a login — the API publishes to Kafka and returns immediately, not waiting on Mongo:
+curl -s -X POST $BASE/auth/login -d "username=alice@example.com&password=supersecret123" > /dev/null
+
+# 2. peek at the raw Kafka message (bypassing the consumer, to see the wire format):
+docker exec bp-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic activity-events --from-beginning --max-messages 1
+
+# 3. give the consumer a moment, then check Mongo has it:
+docker exec bp-mongo mongosh bookstore --quiet --eval 'db.activity.find().sort({ts:-1}).limit(1)'
+
+# 4. and the API's own read path agrees:
+curl -s "$BASE/activity?limit=1" -H "Authorization: Bearer $ACCESS" | jq
+```
+**Expect:** the same event — same `type`, `user_id`, `ts` — visible at all three layers (raw
+Kafka message, raw Mongo document, `GET /activity` response). The `ts` you see in the raw Kafka
+message is an ISO **string** (JSON has no datetime type); the consumer converts it back into a
+real datetime before inserting, so it stores as a proper Mongo date, indistinguishable from the
+events written before Kafka existed — `sort` keeps working correctly across old and new documents.
+
+### 4. Prove the decoupling actually works
+
+```bash
+docker compose stop mongo
+curl -s -o /dev/null -w "login while mongo is down: %{http_code}\n" \
+  -X POST $BASE/auth/login -d "username=alice@example.com&password=supersecret123"
+docker compose start mongo
+```
+**Expect:** still `200`/`401` as normal (whatever the credentials deserve), with **no added
+latency** — the login request never touches Mongo at all anymore, only Kafka. Compare this to
+the pre-Kafka design, where a Mongo outage added up to 3 seconds to every request that recorded
+an event. Once Mongo is back and the consumer reconnects, it resumes from its last committed
+offset — the events published while Mongo was down are still in Kafka and get written once
+the consumer catches up. Nothing is lost.
+
+**✅ Proves:** the request path is now fully decoupled from Mongo's availability, and events are
+durable (replayable from Kafka) instead of best-effort-and-gone.
+
+### Design notes (why it's built this way)
+
+- **Delivery is at-least-once, not exactly-once.** The consumer commits its Kafka offset only
+  *after* the Mongo write succeeds (`enable_auto_commit=False` in `src/kafka.py`), so a crash
+  mid-processing re-delivers the event on restart — a possible duplicate document, never a silent
+  loss. Acceptable for an audit log; would need an idempotency key if this fed something
+  duplicate-sensitive (e.g. billing).
+- **A permanently-failing message doesn't wedge the consumer.** `src/activity/consumer.py` retries
+  the Mongo write 3 times with backoff; if it still fails, the event is logged loudly
+  (`logger.error`) and dropped, and the offset still advances — a poison message can't block
+  every event behind it forever.
+- **The producer is best-effort, matching the original Mongo design.** If Kafka itself is
+  unreachable at startup, the app still boots (`start_producer()` failure is caught in
+  `src/main.py`'s lifespan, same pattern as Mongo) and `record()` just logs a warning and drops
+  the event rather than raising into the request.
+- **Events are keyed by `user_id`** when publishing (`src/activity/service.py`), so Kafka
+  guarantees all of one user's events land in the same partition in the order they were
+  produced — relevant once there's more than one partition.
 
 ---
 
@@ -389,6 +525,8 @@ Tick these off as you go:
 - [ ] `.env` gitignored; key rotation invalidates tokens (§12)
 - [ ] `pytest` green (§13)
 - [ ] `/activity` shows login + book_created events; `403` as non-admin (§14)
+- [ ] `docker compose up -d` brings up Postgres + Mongo + Kafka; existing data intact (§22)
+- [ ] Login while Mongo is stopped still returns instantly (no timeout) — proves the Kafka decoupling (§22)
 
 ---
 
