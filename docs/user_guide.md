@@ -46,6 +46,7 @@ export BASE=http://localhost:8000/api/v1
 | RBAC admin (§19) | 403 vs admin 200 | [11](#11-rbac--admin-19) |
 | Secrets (§20) | gitignore + rotation | [12](#12-secrets-20) |
 | Tests (§15) | `pytest` | [13](#13-run-the-test-suite-15) |
+| MongoDB activity log (§21) | `/activity` audit feed | [14](#14-mongodb-activity-log-21) |
 
 ---
 
@@ -248,18 +249,47 @@ curl -s -o /dev/null -w "prod /openapi.json: %{http_code}\n" http://localhost:80
 
 ## 11. RBAC — admin (§19)
 
-`GET /auth/{user_id}` requires `is_admin`. As a normal user it's forbidden:
+Some routes (`GET /auth/{user_id}`, `GET /activity`) need an **admin**. There is **no API to
+register as admin** — that would be a privilege-escalation hole. Admins are promoted
+server-side, out of band.
+
+### How to make an email an admin
+
+Register the user normally first, then promote by email with the helper script:
+
+```bash
+# Grant admin:
+uv run python scripts/make_admin.py alice@example.com
+# → "Granted admin for alice@example.com."
+
+# Revoke admin:
+uv run python scripts/make_admin.py alice@example.com --revoke
+```
+
+The script ([`scripts/make_admin.py`](../scripts/make_admin.py)) flips the `is_admin` column
+in Postgres. (Emails are stored lowercased, so it lowercases the argument for you. If the
+user isn't registered yet, it tells you to register them first.)
+
+**Prefer raw SQL?** Same effect:
+```bash
+psql "$DATABASE_URL" -c "UPDATE \"user\" SET is_admin = true WHERE email = 'alice@example.com';"
+```
+> `"user"` must be quoted — it's a reserved word in Postgres.
+
+### Verify the gate
+
 ```bash
 MY_ID=$(curl -s $BASE/auth/me -H "Authorization: Bearer $ACCESS" | jq -r .id)
-curl -s $BASE/auth/$MY_ID -H "Authorization: Bearer $ACCESS" | jq        # → 403 forbidden
+curl -s $BASE/auth/$MY_ID -H "Authorization: Bearer $ACCESS" | jq        # non-admin → 403 forbidden
+# ...run make_admin.py for your email, then retry (no re-login needed):
+curl -s $BASE/auth/$MY_ID -H "Authorization: Bearer $ACCESS" | jq        # admin → 200
 ```
-Promote your user to admin **directly in the DB** (there's no self-serve admin endpoint by design), then retry:
-```bash
-# psql into the DB used in your DATABASE_URL, then:
-#   UPDATE "user" SET is_admin = true WHERE email = 'alice@example.com';
-curl -s $BASE/auth/$MY_ID -H "Authorization: Bearer $ACCESS" | jq        # → 200 (no re-login needed)
-```
-**Expect:** `403` (`code":"forbidden"`) before, `200` + the user after. No new token needed — `require_admin` reads `is_admin` fresh from the DB on each request.
+**Expect:** `403` (`"code":"forbidden"`) before, `200` after. No new token needed —
+`require_admin` reads `is_admin` **fresh from the DB** on each request, so promotion takes
+effect immediately.
+
+> For how this is done in real production systems (role tables, IdP groups, JIT elevation),
+> see the design discussion in [`boilerplate_guide.md`](./boilerplate_guide.md) §19.
 
 ---
 
@@ -285,6 +315,61 @@ uv run pytest tests/test_auth.py -v    # watch individual auth/rate-limit/admin 
 
 ---
 
+## 14. MongoDB activity log (§21)
+
+The app writes an audit event to **MongoDB** on `login`, `login_failed`, and `book_created`,
+and exposes them at `GET /activity` (admin-only). This is the NoSQL / polyglot-persistence piece.
+
+### Set up MongoDB locally with Docker
+
+You don't need to install MongoDB — run it in a container.
+
+```bash
+# Start a Mongo container (data persists in the named volume across restarts):
+docker run -d --name bp-mongo -p 27017:27017 -v bp-mongo-data:/data/db mongo:7
+
+# Verify it's up:
+docker ps --filter name=bp-mongo                 # should be "Up"
+docker exec bp-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 })'   # → { ok: 1 }
+```
+
+That's it — the app's default `MONGO_URL=mongodb://localhost:27017` already points at it, so
+no config change is needed. Restart the API server and you should see `mongo connected` in its logs.
+
+Handy container commands:
+```bash
+docker stop bp-mongo        # pause it
+docker start bp-mongo       # resume (data is still there)
+docker rm -f bp-mongo       # remove it; add `docker volume rm bp-mongo-data` to wipe data too
+# peek at the stored events directly:
+docker exec bp-mongo mongosh bookstore --quiet --eval 'db.activity.find().sort({ts:-1}).limit(3)'
+```
+> The app boots fine **without** Mongo — activity writes are best-effort — but the feed will be empty.
+
+**Generate some events, then read them** (needs an **admin** token — see §11):
+```bash
+# these actions each record an event:
+curl -s -X POST $BASE/auth/login -d "username=alice@example.com&password=supersecret123" > /dev/null   # "login"
+curl -s -X POST $BASE/books -H "Authorization: Bearer $ACCESS" -H "Content-Type: application/json" \
+  -d '{"title":"Event Source","author":"A B","year":2024,"price":10}' > /dev/null                      # "book_created"
+
+# read the audit feed (admin only):
+curl -s "$BASE/activity?limit=5" -H "Authorization: Bearer $ACCESS" | jq
+```
+**Expect:** a `Page` of events, newest first, e.g.
+```json
+{ "items": [
+    {"type":"book_created","user_id":"…","detail":{"book_id":"…","title":"Event Source"},"ts":"…"},
+    {"type":"login","user_id":"…","detail":{},"ts":"…"} ],
+  "total": 2, "limit": 5, "offset": 0 }
+```
+**✅ Proves:** two databases running side by side — Postgres for entities, Mongo for the
+event stream — and that different event types carry different `detail` shapes (why it's NoSQL).
+
+As a non-admin, `GET /activity` → `403` (same RBAC gate as §11). Tear down: `docker stop bp-mongo`.
+
+---
+
 ## Feature checklist
 
 Tick these off as you go:
@@ -303,6 +388,7 @@ Tick these off as you go:
 - [ ] `/auth/{id}` → `403` as user, `200` as admin (§11)
 - [ ] `.env` gitignored; key rotation invalidates tokens (§12)
 - [ ] `pytest` green (§13)
+- [ ] `/activity` shows login + book_created events; `403` as non-admin (§14)
 
 ---
 

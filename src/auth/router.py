@@ -13,6 +13,7 @@ from src.auth.dependencies import (
 )
 from src.exceptions import ConflictError, NotFoundError
 from src.ratelimit import limiter
+from src.activity.service import ActivityService, get_activity_service
 from src.auth.model import User
 from src.auth.schema import RefreshRequest, TokenPair, UserCreate, UserRead
 from src.auth.service import TokenAlreadyUsedError, TokenService, UserService
@@ -37,6 +38,7 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     user_service: UserService = Depends(get_user_service),
     token_service: TokenService = Depends(get_token_service),
+    activity: ActivityService = Depends(get_activity_service),
 ):
     """Exchange credentials for an access + refresh token pair.
 
@@ -46,12 +48,14 @@ async def login(
     user = await user_service.authenticate(form_data.username, form_data.password)
     if user is None:
         logger.warning("auth failed: bad login for %s", form_data.username)
+        await activity.record("login_failed", detail={"email": form_data.username})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token, refresh_token = await token_service.issue_pair(user)
+    await activity.record("login", str(user.id))
     return TokenPair(access_token=access_token, refresh_token=refresh_token)
 
 

@@ -8,6 +8,8 @@ from src.dependencies import PaginationParams
 from src.exceptions import NotFoundError
 from src.schemas import Page
 from src.auth.dependencies import get_current_user
+from src.auth.model import User
+from src.activity.service import ActivityService, get_activity_service
 from src.books.model import Book
 from src.books.schema import BookCreate, BookUpdate
 from src.books.service import BookService
@@ -46,8 +48,17 @@ async def get_book(book_id: UUID, service: BookService = Depends(get_book_servic
 
 
 @router.post("", response_model=Book, status_code=201)
-async def create_book(payload: BookCreate, service: BookService = Depends(get_book_service)):
-    return await service.create(payload)
+async def create_book(
+    payload: BookCreate,
+    service: BookService = Depends(get_book_service),
+    current_user: User = Depends(get_current_user),   # cached: resolved once per request
+    activity: ActivityService = Depends(get_activity_service),
+):
+    book = await service.create(payload)
+    # Fire an audit event into Mongo (best-effort; never blocks the response).
+    await activity.record("book_created", str(current_user.id),
+                          {"book_id": str(book.id), "title": book.title})
+    return book
 
 
 @router.put("/{book_id}", response_model=Book)

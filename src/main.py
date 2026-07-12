@@ -6,12 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import Config
 from src.db.main import dispose_engine
+from src.db.mongo import close_mongo, ping_mongo
 from src.exceptions import register_exception_handlers
 from src.logging_config import configure_logging
 from src.middleware import RequestContextMiddleware
 from src.ratelimit import limiter
 from src.books.router import router as books_router
 from src.auth.router import router as auth_router
+from src.activity.router import router as activity_router
 
 configure_logging()
 logger = logging.getLogger("app")
@@ -26,8 +28,14 @@ async def lifespan(app: FastAPI):
     leaking connections. This is the modern replacement for ad-hoc setup/teardown.
     """
     logger.info("starting up")
+    try:
+        await ping_mongo()
+        logger.info("mongo connected")
+    except Exception as exc:  # noqa: BLE001 — Mongo is optional; activity writes are best-effort
+        logger.warning("mongo not reachable at startup: %s", exc)
     yield
     await dispose_engine()
+    close_mongo()
     logger.info("shut down — engine disposed")
 
 
@@ -55,3 +63,4 @@ register_exception_handlers(app)
 
 app.include_router(books_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(activity_router, prefix="/api/v1")

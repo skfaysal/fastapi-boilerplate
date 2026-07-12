@@ -48,18 +48,21 @@ flowchart LR
     SRC[["📂 src"]]
     BOOKSDIR[["📂 books"]]
     AUTHDIR[["📂 auth"]]
+    ACTDIR[["📂 activity"]]
     ALEDIR[["📂 alembic"]]
     TESTSDIR[["📂 tests"]]
     ROOT --- SRC & ALEDIR & TESTSDIR
-    SRC --- CFG & MAIN & DBMAIN & SCHEMAS & DEPS & EXC & MW & LOG & RL & BOOKSDIR & AUTHDIR
+    SRC --- CFG & MAIN & DBMAIN & MONGO & SCHEMAS & DEPS & EXC & MW & LOG & RL & BOOKSDIR & AUTHDIR & ACTDIR
     BOOKSDIR --- BMODEL & BSCHEMA & BSVC & BROUTER
     AUTHDIR --- AMODEL & ASCHEMA & AUTILS & ASVC & ADEP & AROUTER
+    ACTDIR --- ACTSVC & ACTROUTER
     ALEDIR --- ENV & VERS
     TESTSDIR --- TCONF
 
     CFG["📄 config.py"]
     MAIN["📄 main.py"]
     DBMAIN["📄 db/main.py"]
+    MONGO["📄 db/mongo.py"]
     SCHEMAS["📄 schemas.py"]
     DEPS["📄 dependencies.py"]
     EXC["📄 exceptions.py"]
@@ -76,6 +79,8 @@ flowchart LR
     ASVC["📄 service.py"]
     ADEP["📄 dependencies.py"]
     AROUTER["📄 router.py"]
+    ACTSVC["📄 service.py"]
+    ACTROUTER["📄 router.py"]
     ENV["📄 env.py"]
     VERS["📄 versions/*.py"]
     TCONF["📄 conftest.py + test_*.py"]
@@ -83,6 +88,7 @@ flowchart LR
     CFG --> nCFG["All settings, loaded from .env"]
     MAIN --> nMAIN["App + middleware + CORS + lifespan + error handlers"]
     DBMAIN --> nDB["Opens the DB, gives each request a session"]
+    MONGO --> nMONGO["MongoDB client for the activity log"]
     SCHEMAS --> nSC["Shared base model + Page / Error shapes"]
     DEPS --> nDEP["Shared deps: pagination / sort params"]
     EXC --> nEXC["Custom errors → one JSON error shape"]
@@ -102,6 +108,9 @@ flowchart LR
     ADEP --> nAD["Guards routes — is this token valid?"]
     AROUTER --> nAR["The /auth endpoints: register, login, refresh…"]
 
+    ACTSVC --> nACTSVC["Read / write events in MongoDB"]
+    ACTROUTER --> nACTROUTER["GET /activity (admin) — the audit feed"]
+
     ENV --> nENV["Connects Alembic to our DB &amp; models"]
     VERS --> nVER["Scripts that build / change the DB tables"]
     TCONF --> nT["AsyncClient + dependency_overrides (mock db/auth)"]
@@ -117,13 +126,13 @@ flowchart LR
     classDef mig    stroke:#374151,stroke-width:2px;
     classDef test   stroke:#0d9488,stroke-width:2px;
 
-    class ROOT,SRC,BOOKSDIR,AUTHDIR,ALEDIR,TESTSDIR folder;
-    class CFG,MAIN,DBMAIN,SCHEMAS,DEPS,EXC,MW,LOG,RL,BMODEL,BSCHEMA,BSVC,BROUTER,AMODEL,ASCHEMA,AUTILS,ASVC,ADEP,AROUTER,ENV,VERS,TCONF file;
-    class nCFG,nMAIN,nDB,nEXC,nMW,nLOG entry;
+    class ROOT,SRC,BOOKSDIR,AUTHDIR,ACTDIR,ALEDIR,TESTSDIR folder;
+    class CFG,MAIN,DBMAIN,MONGO,SCHEMAS,DEPS,EXC,MW,LOG,RL,BMODEL,BSCHEMA,BSVC,BROUTER,AMODEL,ASCHEMA,AUTILS,ASVC,ADEP,AROUTER,ACTSVC,ACTROUTER,ENV,VERS,TCONF file;
+    class nCFG,nMAIN,nDB,nMONGO,nEXC,nMW,nLOG entry;
     class nBM,nAM model;
     class nBSC,nASC,nSC,nDEP schema;
-    class nBSV,nASV service;
-    class nBR,nAR router;
+    class nBSV,nASV,nACTSVC service;
+    class nBR,nAR,nACTROUTER router;
     class nAU,nAD,nRL sec;
     class nENV,nVER mig;
     class nT test;
@@ -165,10 +174,12 @@ The repo built up in these ten steps. Click any section to expand it.
 | 18 | [Environment-Gated Docs](#18--environment-gated-docs) | `security` `config` `docs` | Env Feature Flag |
 | 19 | [RBAC — Admin Authorization](#19--rbac--admin-authorization) | `rbac` `authorization` `dependency` | Role Gate (DI) |
 | 20 | [Secrets Management](#20--secrets-management) | `secrets` `ops` `runbook` | Ops Runbook |
+| 21 | [MongoDB Activity Log](#21--mongodb-activity-log-polyglot-persistence) | `mongodb` `nosql` `polyglot-persistence` | Polyglot Persistence |
 
 > **§01–10** are the core request path (build a working, secured CRUD API).
 > **§11–15** are cross-cutting concerns that make it production-*shaped*.
 > **§16–20** are production *hardening & security* (roadmap Phase 2).
+> **§21+** is *polyglot persistence* — a second database (MongoDB) where NoSQL fits better (evolving).
 > Two earlier sections were also upgraded: **§04** covers the shared base model +
 > Pydantic v2 validators, and **§04/§14** share the `Page` envelope.
 
@@ -1169,6 +1180,78 @@ not in code.
   response to a suspected leak). In prod, inject secrets from the platform, not a file.
 
 **Pattern — Ops runbook (documented, repeatable procedure).**
+</details>
+
+---
+
+### 21 · MongoDB Activity Log (Polyglot Persistence)
+
+**🏷 Tags:** `mongodb` · `nosql` · `polyglot-persistence`
+
+<details>
+<summary><b>A second database — the right tool for a schemaless event stream.</b></summary>
+
+```text
+src/db/mongo.py        🟢 motor client + get_activity_collection() + ping/close
+src/activity/schema.py 🟠 ActivityEvent (type / user_id / detail / ts)
+src/activity/service.py 🟣 ActivityService: record() + list_recent()
+src/activity/router.py 🔵 GET /activity (admin-only)
+src/auth/router.py     🔵 records "login" / "login_failed"
+src/books/router.py    🔵 records "book_created"
+```
+
+**What & why it's here — the use case.** Not every problem is relational. The **activity /
+audit log** is append-only, write-heavy, and each event carries a *different* payload
+(`login` → `{}`, `book_created` → `{book_id, title}`). Forcing that into a SQL table means
+either many nullable columns or an opaque JSON blob. A **document store** takes it natively.
+So the app runs **two databases side by side (polyglot persistence)**:
+
+| | Postgres (SQLModel) | MongoDB (motor) |
+|---|---|---|
+| Holds | source-of-truth entities (users, books) | the activity event stream |
+| Shape | fixed schema, migrations | schemaless documents |
+| Needs | joins, transactions, constraints | fast appends, recent-first reads |
+
+**The code:**
+```python
+# db/mongo.py — lazy client; app still boots if Mongo is down
+mongo_client = AsyncIOMotorClient(Config.MONGO_URL, serverSelectionTimeoutMS=3000)
+def get_activity_collection():
+    return mongo_client[Config.MONGO_DB]["activity"]
+
+# activity/service.py — no schema, no migration: just insert a dict
+async def record(self, event_type, user_id=None, detail=None):
+    try:
+        await self.collection.insert_one({"type": event_type, "user_id": user_id,
+                                          "detail": detail or {}, "ts": datetime.now(timezone.utc)})
+    except Exception as exc:                     # best-effort: an audit write must never
+        logger.warning("activity log write failed: %s", exc)   # break the user's request
+```
+Events are recorded as a side effect of real actions (`login`, `book_created`), and read
+back through one endpoint:
+```python
+# activity/router.py — admin-only feed, newest first
+@router.get("", response_model=Page[ActivityEvent])
+async def list_activity(limit=Query(20, ge=1, le=100), offset=Query(0, ge=0),
+                        service = Depends(get_activity_service)):
+    items, total = await service.list_recent(limit, offset)
+    return Page(items=items, total=total, limit=limit, offset=offset)
+```
+
+**How it's used.**
+```
+GET /api/v1/activity   (admin token)
+→ { "items": [ {"type":"book_created","detail":{"book_id":"…","title":"…"},"ts":"…"},
+               {"type":"login","detail":{},"ts":"…"} ], "total": 2, "limit": 20, "offset": 0 }
+```
+Run Mongo locally with `docker run -d -p 27017:27017 mongo:7` (or set `MONGO_URL`). No
+migration needed — the collection is created on first write.
+
+**Design notes.** Writes are **best-effort** (a logged, swallowed failure) because an audit
+side-effect must never fail the primary request. Mongo is **optional at boot** — if it's
+unreachable the app still serves; only the activity feed is empty.
+
+**Pattern — Polyglot Persistence (use each datastore for what it's best at).**
 </details>
 
 ---

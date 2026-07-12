@@ -29,8 +29,19 @@ import src.auth.model  # noqa: F401,E402
 from src.auth.dependencies import get_current_user  # noqa: E402
 from src.auth.model import User  # noqa: E402
 from src.db.main import get_session  # noqa: E402
+from src.activity.service import get_activity_service  # noqa: E402
 from src.main import app  # noqa: E402
 from src.ratelimit import limiter  # noqa: E402
+
+
+class _NoopActivity:
+    """Stand-in for ActivityService so tests never reach out to Mongo."""
+
+    async def record(self, *args, **kwargs):
+        pass
+
+    async def list_recent(self, *args, **kwargs):
+        return [], 0
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +71,7 @@ async def client(session) -> AsyncClient:
         yield session
 
     app.dependency_overrides[get_session] = _override_get_session
+    app.dependency_overrides[get_activity_service] = lambda: _NoopActivity()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

@@ -20,6 +20,7 @@ It ships with two example modules — **`books`** (a reference CRUD resource) an
 | Web framework | FastAPI |
 | ORM / models | SQLModel (SQLAlchemy + Pydantic) |
 | Database | PostgreSQL via `asyncpg` (async) |
+| NoSQL store | MongoDB via `motor` (async) — activity log |
 | Migrations | Alembic |
 | Auth | JWT (PyJWT) + bcrypt, access + refresh tokens |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
@@ -32,6 +33,7 @@ It ships with two example modules — **`books`** (a reference CRUD resource) an
 - **Python 3.11+**
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - A running **PostgreSQL** database
+- *(Optional)* a **MongoDB** instance for the activity log — the app boots without it (`docker run -d -p 27017:27017 mongo:7`)
 
 ---
 
@@ -69,6 +71,8 @@ The API is now live at **http://localhost:8000**.
 | `REFRESH_TOKEN_EXPIRE_DAYS` | | `7` | Long-lived refresh token |
 | `CORS_ORIGINS` | | `["*"]` | Allowed browser origins (lock down in prod) |
 | `ENVIRONMENT` | | `dev` | `prod` hides `/docs`, `/redoc`, `/openapi.json` |
+| `MONGO_URL` | | `mongodb://localhost:27017` | Activity log store (optional) |
+| `MONGO_DB` | | `bookstore` | Mongo database name |
 
 ---
 
@@ -90,6 +94,7 @@ and `/auth/{id}` routes require a valid **access token** (`Authorization: Bearer
 | `POST` | `/books` | access token | JSON `BookCreate` | Create a book |
 | `PUT` | `/books/{book_id}` | access token | JSON `BookUpdate` | Update a book |
 | `DELETE` | `/books/{book_id}` | access token | — | Delete a book |
+| `GET` | `/activity` | **admin** | — | Audit feed from MongoDB (login / book events) |
 
 Every error comes back in one consistent shape:
 ```json
@@ -243,10 +248,15 @@ src/
 ├── dependencies.py    # shared deps (pagination params)
 ├── exceptions.py      # custom errors + consistent handlers
 ├── middleware.py      # request id + timing
-├── db/main.py         # async engine, session, get_session()
+├── logging_config.py  # structured JSON logging
+├── ratelimit.py       # slowapi limiter
+├── db/main.py         # async Postgres engine, session, get_session()
+├── db/mongo.py        # async MongoDB client (activity log)
 ├── books/             # example CRUD module (model / schema / service / router)
-└── auth/              # users + JWT (model / schema / utils / service / dependencies / router)
+├── auth/              # users + JWT (model / schema / utils / service / dependencies / router)
+└── activity/          # MongoDB activity log (schema / service / router)
 alembic/               # migration env + versioned scripts
+scripts/               # seed_books.py, make_admin.py
 tests/                 # pytest suite (AsyncClient + dependency_overrides)
 ```
 
